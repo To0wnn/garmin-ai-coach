@@ -6,6 +6,7 @@ review instead of the short daily check-in."""
 import json
 import os
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -479,7 +480,30 @@ def post_error_to_discord(error: Exception):
         pass  # if even the error message can't be sent, there's nothing more to do
 
 
+SYNC_WAIT_MAX_SECONDS = 180
+SYNC_WAIT_POLL_SECONDS = 60
+
+
+def wait_for_fresh_sync():
+    """garmin-fetch-data syncs from Garmin Connect to InfluxDB every 5 minutes
+    on its own — this just gives it a bit of headroom before we read the data,
+    in case a sync cycle is in progress right when this runs. Not a hard
+    guarantee (we don't have Docker access to force a sync), just a short,
+    bounded wait: if the watch's last-known sync (DeviceSync) is very recent,
+    give garmin-fetch-data one more poll interval to pick it up before we read."""
+    rows = influx_query("SELECT * FROM DeviceSync ORDER BY time DESC LIMIT 1")
+    if not rows:
+        return
+    ts = datetime.fromisoformat(rows[0]["time"].replace("Z", "+00:00"))
+    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
+    if age_seconds < SYNC_WAIT_POLL_SECONDS:
+        wait = min(SYNC_WAIT_POLL_SECONDS - age_seconds + 5, SYNC_WAIT_MAX_SECONDS)
+        print(f"Recent watch sync detected ({age_seconds:.0f}s ago) — waiting {wait:.0f}s for garmin-fetch-data to catch up.")
+        time.sleep(wait)
+
+
 def main():
+    wait_for_fresh_sync()
     metrics = build_metrics()
     prompt = build_prompt(metrics, IS_WEEKLY)
     advice = call_claude(prompt)
