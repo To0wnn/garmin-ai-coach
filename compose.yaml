@@ -9,6 +9,7 @@ services:
       - INFLUXDB_URL=${INFLUXDB_URL}
       - INFLUXDB_DB=${INFLUXDB_DB:-GarminStats}
       - LOCAL_TZ=${LOCAL_TZ:-Europe/Amsterdam}
+      - LANGUAGE=${LANGUAGE:-English}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
     volumes:

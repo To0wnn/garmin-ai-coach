@@ -1,18 +1,19 @@
 # Garmin AI Coach
 
-Dagelijks (en op zondag uitgebreid) trainingsadvies voor hardlopen én fietsen,
-gebaseerd op je Garmin-data uit [garmin-grafana](https://github.com/arpanghosh8453/garmin-grafana),
-gegenereerd door Claude en gepost in Discord.
+Daily (and an in-depth weekly review on Sundays) training advice for running
+and cycling, based on your Garmin data from
+[garmin-grafana](https://github.com/arpanghosh8453/garmin-grafana), generated
+by Claude and posted to Discord.
 
-Draait op je eigen Claude-abonnement (Pro/Max) — geen losse API-kosten.
+Runs on your own Claude subscription (Pro/Max) — no separate API costs.
 
-## Vereisten
+## Requirements
 
-- Een draaiende [garmin-grafana](https://github.com/arpanghosh8453/garmin-grafana) stack (InfluxDB gevuld met je Garmin-data)
-- Een Claude Pro/Max/Team-abonnement
-- Een Discord-webhook-URL
+- A running [garmin-grafana](https://github.com/arpanghosh8453/garmin-grafana) stack (InfluxDB filled with your Garmin data)
+- A Claude Pro/Max/Team subscription
+- A Discord webhook URL
 
-## Installatie
+## Installation
 
 ```bash
 git clone <repo-url> garmin-ai-coach
@@ -20,41 +21,43 @@ cd garmin-ai-coach
 cp .env.example .env
 ```
 
-Vul `.env` in:
+Fill in `.env`:
 
-- `DISCORD_WEBHOOK_URL` — Discord → Serverinstellingen → Integraties → Webhooks → Nieuwe webhook → kies het kanaal → kopieer de URL.
-- `CLAUDE_CODE_OAUTH_TOKEN` — genereer met:
+- `INFLUXDB_URL` / `INFLUXDB_DB` — point these at your garmin-grafana InfluxDB.
+- `DISCORD_WEBHOOK_URL` — Discord → Server Settings → Integrations → Webhooks → New Webhook → pick the channel → copy the URL.
+- `LANGUAGE` — the language the advice is written in (e.g. `English`, `Nederlands`, `Deutsch`, `Español`). Defaults to English.
+- `CLAUDE_CODE_OAUTH_TOKEN` — generate with:
 
 ```bash
 docker compose run --rm --entrypoint claude garmin-ai-coach setup-token
 ```
 
-Plak het token in `.env` als `CLAUDE_CODE_OAUTH_TOKEN`, dan:
+Paste the token into `.env`, then:
 
 ```bash
 docker compose up -d
 ```
 
-**Eenmalig inloggen** (nodig omdat Claude Code's interactieve modus dit los van
-het token vraagt):
+**One-time login** (needed because Claude Code's interactive mode requires
+this separately from the token):
 
 ```bash
 docker exec -it -u coach -e TMUX_TMPDIR=/tmp/tmux-shared garmin-ai-coach tmux attach -t coach
 ```
 
-Volg de login-link in je browser, plak de code, klaar. Detach met `Ctrl+B` `D` —
-de sessie blijft draaien. Vanaf nu draait alles zelfstandig, elke ochtend om
-06:00 UTC (in te stellen via `LOCAL_TZ`).
+Follow the login link in your browser, paste the code, done. Detach with
+`Ctrl+B` `D` — the session keeps running. From here on everything runs on its
+own, every morning at 06:00 UTC (adjustable via `LOCAL_TZ`).
 
-## Wat je krijgt
+## What you get
 
-- **Dagelijks**: korte status + concreet advies per sport (type training, duur, doel-hartslag/pace)
-- **Zondag**: uitgebreid weekoverzicht met trend-vergelijking (deze week vs. vorige week vs. 4-weken-gemiddelde)
-- Houdt rekening met slaap, trainingsbelasting (ACWR), en of je die dag al getraind hebt
+- **Daily**: short status update + concrete advice per sport (workout type, duration, target heart rate/pace)
+- **Sunday**: in-depth weekly review with trend comparison (this week vs. last week vs. 4-week average)
+- Takes sleep, training load (ACWR), and whether you've already trained that day into account
 
-## Hoe het werkt
+## How it works
 
-Een permanente Claude Code-sessie draait in de container (via tmux) — cron
-stuurt er dagelijks een prompt naartoe met je vooraf-berekende Garmin-cijfers.
-Claude schrijft het advies naar een bestand, dat wordt naar Discord gepost.
-Na elke run wordt de sessie gereset (`/clear`) zodat context niet opstapelt.
+A permanent Claude Code session runs inside the container (via tmux) — cron
+sends it a prompt every day with your pre-computed Garmin numbers. Claude
+writes the advice to a file, which gets posted to Discord. After every run
+the session is reset (`/clear`) so context doesn't build up over time.

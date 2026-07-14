@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Garmin AI coach: queries InfluxDB, aggregates metrics, asks Claude Code for
-advice, posts the result to Discord. Run daily; on Sundays does a full weekly
+advice, posts the result to Discord. Runs daily; on Sundays does a full weekly
 review instead of the short daily check-in."""
 
 import json
@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 INFLUXDB_URL = os.environ["INFLUXDB_URL"]  # e.g. http://172.17.0.1:8187
 INFLUXDB_DB = os.environ.get("INFLUXDB_DB", "GarminStats")
 DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
+LANGUAGE = os.environ.get("LANGUAGE", "English")  # e.g. English, Nederlands, Deutsch
 LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TZ", "Europe/Amsterdam"))
 NOW_LOCAL = datetime.now(LOCAL_TZ)
 IS_WEEKLY = NOW_LOCAL.weekday() == 6  # Sunday, in lokale tijd
@@ -22,7 +23,7 @@ OUTPUT_FILE = "/app/output/advies.json"
 
 
 def local_midnight_utc(days_ago: int = 0) -> datetime:
-    """Middernacht in lokale tijdzone, N dagen geleden, omgerekend naar UTC."""
+    """Midnight in the local timezone, N days ago, converted to UTC."""
     midnight_local = NOW_LOCAL.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_ago)
     return midnight_local.astimezone(timezone.utc)
 
@@ -47,8 +48,8 @@ def avg(rows: list[dict], field: str) -> float | None:
 
 
 def latest(measurement: str) -> dict:
-    """Meest recente datapunt, met een staleness-vlag zodat de prompt weet of de
-    data nog actueel genoeg is om op te vertrouwen."""
+    """Most recent data point, with a staleness flag so the prompt knows whether
+    the data is still fresh enough to rely on."""
     rows = influx_query(f'SELECT * FROM "{measurement}" ORDER BY time DESC LIMIT 1')
     if not rows:
         return {"available": False}
@@ -79,8 +80,9 @@ def build_metrics() -> dict:
     last_28d = daily_stats_window(0, 28)
 
     today_sleep_h = round(today[0]["sleepingSeconds"] / 3600, 1) if today and today[0].get("sleepingSeconds") else None
-    # sleep_vs_7d_avg vergelijkt tegen de 6 dagen VOOR vandaag, niet inclusief vandaag zelf,
-    # anders wordt de afwijking structureel gedempt door vandaag mee te tellen in het gemiddelde.
+    # sleep_vs_7d_avg compares against the 6 days BEFORE today, not including today
+    # itself — otherwise the deviation gets structurally dampened by including
+    # today in its own baseline average.
     prior_6d = daily_stats_window(1, 6)
     prior_6d_sleep_avg = avg(prior_6d, "sleepingSeconds")
 
@@ -134,7 +136,7 @@ def _activities_today() -> list[dict]:
         if not activity_type or activity_type == "No Activity":
             continue
         key = (activity_type, r.get("activityName"), r.get("distance"))
-        if key in seen:  # garmin-fetch-data kan een activiteit dubbel wegschrijven bij re-sync
+        if key in seen:  # garmin-fetch-data can write an activity twice on re-sync
             continue
         seen.add(key)
         result.append(
@@ -186,8 +188,8 @@ def _lactate_threshold() -> dict:
     r = latest("LactateThreshold")
     if not r.get("available", True):
         return r
-    # Garmin's lactateThresholdSpeed-endpoint geeft de waarde als seconden/meter (pace),
-    # niet als m/s snelheid — geverifieerd tegen een realistisch drempeltempo (~5-6 min/km).
+    # Garmin's lactateThresholdSpeed endpoint returns the value as seconds/meter (pace),
+    # not m/s speed — verified against a realistic threshold pace (~5-6 min/km).
     sec_per_m = r.get("SpeedThreshold_RUNNING")
     pace_decimal = sec_per_m * 1000 / 60 if sec_per_m else None
     return {
@@ -198,12 +200,12 @@ def _lactate_threshold() -> dict:
 
 
 def _cycling_hr_zones(today: list[dict], last_28d: list[dict]) -> dict:
-    # Geen fietsspecifieke lactaatdrempel beschikbaar via Garmin's API (endpoint bestaat
-    # technisch, geeft geen data terug voor dit account) — bereken globale HR-zones met
-    # de Karvonen-formule i.p.v. een echte FTP/drempeltest.
+    # No cycling-specific lactate threshold available via Garmin's API (the endpoint
+    # exists technically but returns no data for this account) — compute generic HR
+    # zones with the Karvonen formula instead of a real FTP/threshold test.
     resting_hr = (today[0].get("restingHeartRate") if today else None) or avg(last_28d, "restingHeartRate")
-    # Alleen fiets-activiteiten voor max HR — hardlopen geeft doorgaans 5-10 bpm hogere piekwaarden
-    # en zou de cycling-zones vertekenen.
+    # Only cycling activities for max HR — running typically gives 5-10 bpm higher
+    # peaks and would skew the cycling zones.
     max_hr_rows = influx_query(
         "SELECT max(maxHR) FROM ActivitySummary WHERE time > now() - 90d "
         "AND (activityType = 'road_biking' OR activityType = 'indoor_cycling' OR activityType = 'mountain_biking')"
@@ -224,118 +226,122 @@ def _cycling_hr_zones(today: list[dict], last_28d: list[dict]) -> dict:
 
 
 JSON_SCHEMA_DAILY = """{
-  "status": "<1 zin: slaap/rustpols/body battery/training readiness score>",
-  "run_tip": "<1-2 zinnen hardloopadvies>",
-  "bike_tip": "<1-2 zinnen fietsadvies>",
-  "kleur": "groen of geel"
+  "status": "<1 sentence: sleep/resting HR/body battery/training readiness score>",
+  "run_tip": "<1-2 sentences running advice>",
+  "bike_tip": "<1-2 sentences cycling advice>",
+  "color": "green or yellow"
 }"""
 
 JSON_SCHEMA_WEEKLY = """{
-  "performance": "<2-3 zinnen algemene weekbeoordeling>",
-  "recovery": "<2-3 zinnen, noem expliciet de ACWR-ratio>",
-  "run_advies": "<2-3 zinnen hardloopadvies komende week>",
-  "bike_advies": "<2-3 zinnen fietsadvies komende week>",
-  "aandachtspunt": "<1-2 zinnen, of 'Geen bijzonderheden'>",
-  "kleur": "groen, oranje of rood"
+  "performance": "<2-3 sentences overall weekly assessment>",
+  "recovery": "<2-3 sentences, explicitly mention the ACWR ratio>",
+  "run_advice": "<2-3 sentences running advice for the coming week>",
+  "bike_advice": "<2-3 sentences cycling advice for the coming week>",
+  "watch_point": "<1-2 sentences, or 'Nothing notable'>",
+  "color": "green, orange or red"
 }"""
 
 
 def build_prompt(metrics: dict, weekly: bool) -> str:
     m = json.dumps(metrics, indent=2, ensure_ascii=False)
     disclaimer = (
-        "Geen medische claims of diagnoses. Bij aanhoudende afwijkingen: "
-        "verwijs naar arts/fysiotherapeut, geen stellige uitspraken."
+        "No medical claims or diagnoses. For persistent issues, refer to a doctor "
+        "or physiotherapist — avoid overly confident statements."
     )
-    context = """Uitleg van de velden:
-- training_readiness.score (0-100) en .level: Garmin's eigen paraatheid-score voor vandaag.
-  Als "available": false of "data_stale": true staat: deze data ontbreekt of is verouderd
-  (meer dan 36 uur oud) — vertrouw er dan niet op, val terug op slaap/rustpols/ACWR.
-- training_status.acute_chronic_load_ratio (ACWR): <0.8 = te weinig belasting (ondertraind),
-  0.8-1.3 = gezonde zone, 1.3-1.5 = let op (opbouwend risico), >1.5 = verhoogd blessurerisico
-  (te snel opgebouwd). Dit geldt voor de algehele belasting (hardlopen + fietsen samen).
-- training_status.status: Garmin's kwalificatie (bv. PRODUCTIVE, PEAKING, OVERREACHING, RECOVERY).
-- lactate_threshold_running.threshold_hr_running: exacte, gemeten hartslag-drempel voor hardlopen.
-- lactate_threshold_running.threshold_pace_min_per_km: exact, gemeten drempeltempo hardlopen,
-  AL GEFORMATTEERD als "M:SS min/km" (bv. "5:41 min/km") — neem deze notatie letterlijk over,
-  reken niet zelf om of interpreteer niet als decimaal getal.
-- cycling_hr_zones: GEEN gemeten drempel beschikbaar (Garmin levert dit niet voor fietsen op dit
-  account) — dit zijn algemene, berekende hartslagzones (Karvonen-formule op basis van rustpols en
-  gemeten max HR tijdens fietsactiviteiten), minder precies dan de running-drempel. Vermeld dit
-  bij het fietsadvies.
-- today.sleep_hours en today.sleep_vs_prior_6d_avg_hours (verschil t.o.v. het gemiddelde van de
-  voorgaande 6 dagen, dus zonder vandaag zelf mee te tellen): slaap is een VOLWAARDIGE
-  beslissingsfactor naast readiness/ACWR, niet alleen een statuscijfer. Een duidelijk tekort
-  (bv. -1,5u of meer) moet de intensiteit/duur van het advies merkbaar temperen, ook als body
-  battery/readiness op zichzelf goed ogen — een hoge body battery na weinig slaap zegt vooral
-  iets over energie op dit moment, niet over volledig fysiek herstel.
-- today.activities_already_done_today: sport-activiteiten die AL zijn uitgevoerd sinds lokale
-  middernacht vandaag (type, naam, afstand, duur in minuten, gem. hartslag, calorieën). De
-  gebruiker fietst regelmatig 2x op een dag (bv. een korte ochtendrit + een langere avondrit) —
-  "al 1x gedaan" betekent dus NIET automatisch "klaar voor vandaag". Beoordeel per sport of een
-  volgende sessie vandaag nog verantwoord is:
-  * Was de al-gedane sessie kort/licht (bv. <45 min, lage gem. HR t.o.v. de threshold-HR) en is
-    readiness/ACWR verder goed: een 2e, aanvullende sessie kan prima — behandel het dan als een
-    normale trainingsdag met eventueel een lichtere 2e sessie (bv. een korte duurrit/duurloop of
-    hersteltraining), niet als "extra bovenop een al volle dag".
-  * Was de al-gedane sessie lang/zwaar (bv. >90 min, of gem. HR dicht bij/boven de threshold-HR),
-    of staan er al 2+ sessies van dezelfde sport: raad een nieuwe sessie van diezelfde sport af,
-    geef hooguit een korte hersteltip, en noem expliciet wat er al gedaan is (type/duur/afstand).
-  Voor de sport die nog helemaal niet gedaan is vandaag: geef gewoon normaal advies. Is de lijst
-  leeg: geef voor beide sporten een voorstel."""
+    context = """Field explanations:
+- training_readiness.score (0-100) and .level: Garmin's own readiness score for today.
+  If "available": false or "data_stale": true is set: this data is missing or stale
+  (more than 36 hours old) — don't rely on it, fall back on sleep/resting HR/ACWR.
+- training_status.acute_chronic_load_ratio (ACWR): <0.8 = too little load (undertrained),
+  0.8-1.3 = healthy zone, 1.3-1.5 = caution (rising risk), >1.5 = elevated injury risk
+  (ramped up too fast). This covers overall load (running + cycling combined).
+- training_status.status: Garmin's classification (e.g. PRODUCTIVE, PEAKING, OVERREACHING, RECOVERY).
+- lactate_threshold_running.threshold_hr_running: exact, measured heart rate threshold for running.
+- lactate_threshold_running.threshold_pace_min_per_km: exact, measured threshold pace for running,
+  ALREADY FORMATTED as "M:SS min/km" (e.g. "5:41 min/km") — reuse this notation verbatim,
+  don't recalculate or interpret it as a decimal number.
+- cycling_hr_zones: NO measured threshold available (Garmin doesn't provide this for cycling on
+  this account) — these are generic, calculated heart rate zones (Karvonen formula based on
+  resting HR and measured max HR during cycling activities), less precise than the running
+  threshold. Mention this when giving cycling advice.
+- today.sleep_hours and today.sleep_vs_prior_6d_avg_hours (difference vs. the average of the
+  preceding 6 days, so not counting today itself): sleep is a FULL decision factor alongside
+  readiness/ACWR, not just a status figure. A clear deficit (e.g. -1.5h or more) should
+  noticeably temper the intensity/duration of the advice, even if body battery/readiness look
+  fine on their own — a high body battery after little sleep mostly reflects current energy,
+  not full physical recovery.
+- today.activities_already_done_today: sport activities ALREADY completed since local midnight
+  today (type, name, distance, duration in minutes, avg heart rate, calories). The user
+  regularly trains the same sport twice in one day (e.g. a short morning ride + a longer
+  evening ride) — "already done once" does NOT automatically mean "done for today". Assess
+  per sport whether another session today is still reasonable:
+  * If the completed session was short/light (e.g. <45 min, low avg HR relative to the
+    threshold HR) and readiness/ACWR otherwise look good: a 2nd, additional session is fine —
+    treat it as a normal training day with a possibly lighter 2nd session (e.g. a short
+    endurance ride/run or recovery session), not as "extra on top of an already full day".
+  * If the completed session was long/hard (e.g. >90 min, or avg HR close to/above the
+    threshold HR), or there are already 2+ sessions of the same sport: advise against another
+    session of that sport, give at most a short recovery tip, and explicitly mention what was
+    already done (type/duration/distance).
+  For the sport not done at all today: give normal advice. If the list is empty: give a
+  suggestion for both sports."""
 
     recovery_note = (
-        "Als hardlopen/fietsen vandaag afgeraden wordt (lage readiness, hoge ACWR, of "
-        "training_status op RECOVERY/OVERREACHING): geef dan een kort wandeladvies (bv. 20-30 min "
-        "rustig wandelen) als actief-herstel-alternatief — dat is geen tegenstelling met "
-        "herstellen, actieve rust bevordert doorbloeding zonder extra belasting. Zeg er expliciet "
-        "bij dat het een hersteldag is, geen trainingsdag."
+        "If running/cycling is discouraged today (low readiness, high ACWR, or training_status "
+        "on RECOVERY/OVERREACHING): give a short walking suggestion instead (e.g. 20-30 min easy "
+        "walk) as an active-recovery alternative — that's not a contradiction of resting, active "
+        "recovery promotes blood flow without adding load. State explicitly that it's a recovery "
+        "day, not a training day."
     )
 
     schema = JSON_SCHEMA_WEEKLY if weekly else JSON_SCHEMA_DAILY
     role = (
-        'Je bent een ervaren fitness/hersteltrainer, vergelijkbaar met Garmin\'s eigen '
-        '"Daily Suggested Workouts"-feature maar met meer context en uitleg.'
+        'You are an experienced fitness/recovery coach, similar to Garmin\'s own '
+        '"Daily Suggested Workouts" feature but with more context and explanation.'
         if weekly
-        else 'Je bent een fitness-coach die net als Garmin\'s "Daily Suggested Workouts" een '
-        'concreet, uitvoerbaar trainingsadvies voor VANDAAG geeft — niet alleen "rustig aan" maar '
-        'een specifiek workout-voorstel met type, duur en intensiteit-doel.'
+        else 'You are a fitness coach who, like Garmin\'s "Daily Suggested Workouts", gives '
+        'concrete, actionable training advice for TODAY — not just "take it easy" but a '
+        'specific workout suggestion with type, duration, and intensity target.'
     )
     comparison_note = (
-        "\n`last_7d_avg` = deze week, `prev_7d_avg` = vorige week, `last_28d_avg` = 4-weken-baseline. "
-        "Vergelijk expliciet trends (verbetering/verslechtering), niet alleen een snapshot.\n"
+        "\n`last_7d_avg` = this week, `prev_7d_avg` = last week, `last_28d_avg` = 4-week "
+        "baseline. Explicitly compare trends (improvement/decline), not just a snapshot.\n"
         if weekly
         else ""
     )
 
-    return f"""{role} Geef hardloop- en fietsadvies altijd apart, nooit gemengd in één veld.
+    return f"""{role} Always give running and cycling advice in separate fields, never mixed
+into one.
 {recovery_note}
 
-Gebruik deze Garmin-data (al vooraf berekend — geen ruwe tijdreeksen, gebruik geen andere
-getallen dan hieronder gegeven):
+Use this Garmin data (already pre-computed — no raw time series, don't use any numbers other
+than what's given below):
 
 {m}
 
 {context}
 {comparison_note}
-Antwoord met geldige JSON volgens dit schema (Nederlandse tekst in de waarden):
+Respond with valid JSON per this schema. Write all text values in {LANGUAGE}, EXCEPT the
+"color" field — always keep that in English exactly as shown in the schema (green/yellow/
+orange/red), regardless of {LANGUAGE}:
 {schema}
 
 {disclaimer}
 
-Schrijf UITSLUITEND de JSON (niets anders, geen toelichting, geen markdown-codeblok) weg naar
-het bestand {OUTPUT_FILE} met de Write-tool. Geef daarna een korte bevestiging in de chat."""
+Write ONLY the JSON (nothing else, no explanation, no markdown code block) to the file
+{OUTPUT_FILE} using the Write tool. Then give a brief confirmation in the chat."""
 
 
 def call_claude(prompt: str) -> dict:
-    """Stuurt de prompt naar de permanente 'coach' tmux-sessie i.p.v. een verse
-    `claude -p`-subprocess te starten — dat laatste triggert elke keer een
-    kostbare cache-write (systeemprompt/tools opnieuw), wat disproportioneel
-    veel van het sessiequotum verbruikt bij een koude/verse container-start.
+    """Sends the prompt to the permanent 'coach' tmux session instead of spawning
+    a fresh `claude -p` subprocess — the latter triggers an expensive cache write
+    (system prompt/tools) every time, which burns a disproportionate amount of
+    the session quota on a cold/fresh container start.
 
-    Claude schrijft het antwoord zelf naar OUTPUT_FILE (via de Write-tool) i.p.v.
-    dat we het uit de tmux-scherm-tekst proberen te scrapen — schermtekst-parsing
-    bleek fragiel (race conditions met tussentijdse 'thinking'-frames, line-wraps
-    die JSON-strings braken, markers die te vroeg/laat gezien werden)."""
+    Claude writes the answer itself to OUTPUT_FILE (via the Write tool) instead
+    of us trying to scrape it from the tmux screen text — screen-text parsing
+    turned out to be fragile (race conditions with intermediate 'thinking'
+    frames, line wraps that broke JSON strings, markers seen too early/late)."""
     import session_ask
 
     session_ask.ask_and_wait_for_file(prompt, OUTPUT_FILE)
@@ -351,7 +357,10 @@ def call_claude(prompt: str) -> dict:
     return json.loads(response_text)
 
 
-COLOR_MAP = {"groen": 0x2ECC71, "geel": 0xF1C40F, "oranje": 0xE67E22, "rood": 0xE74C3C}
+# Matched against English color-name substrings so this keeps working regardless
+# of LANGUAGE — Claude is instructed to write the "color" value in English
+# (see JSON_SCHEMA_*), only the advice text itself is translated.
+COLOR_MAP = {"green": 0x2ECC71, "yellow": 0xF1C40F, "orange": 0xE67E22, "red": 0xE74C3C}
 
 
 def _field(value: str | None) -> str:
@@ -373,29 +382,29 @@ def post_discord(embed: dict):
 
 
 def build_embed(advice: dict, weekly: bool) -> dict:
-    color = COLOR_MAP.get(str(advice.get("kleur", "")).lower(), 0x95A5A6)
+    color = COLOR_MAP.get(str(advice.get("color", "")).lower(), 0x95A5A6)
     today_str = NOW_LOCAL.strftime("%d-%m-%Y")
 
     if weekly:
         return {
-            "title": f"🏃🚴 Week overzicht — {today_str}",
+            "title": f"🏃🚴 Weekly overview — {today_str}",
             "color": color,
             "fields": [
                 {"name": "📊 Performance", "value": _field(advice.get("performance")), "inline": False},
                 {"name": "😴 Recovery", "value": _field(advice.get("recovery")), "inline": False},
-                {"name": "🏃 Hardlopen", "value": _field(advice.get("run_advies")), "inline": False},
-                {"name": "🚴 Fietsen", "value": _field(advice.get("bike_advies")), "inline": False},
-                {"name": "⚠️ Aandachtspunt", "value": _field(advice.get("aandachtspunt")), "inline": False},
+                {"name": "🏃 Running", "value": _field(advice.get("run_advice")), "inline": False},
+                {"name": "🚴 Cycling", "value": _field(advice.get("bike_advice")), "inline": False},
+                {"name": "⚠️ Watch point", "value": _field(advice.get("watch_point")), "inline": False},
             ],
             "footer": {"text": "Garmin AI Coach — Claude"},
         }
     return {
-        "title": f"📅 Vandaag — {today_str}",
+        "title": f"📅 Today — {today_str}",
         "color": color,
         "fields": [
             {"name": "Status", "value": _field(advice.get("status")), "inline": False},
-            {"name": "🏃 Hardlopen", "value": _field(advice.get("run_tip")), "inline": False},
-            {"name": "🚴 Fietsen", "value": _field(advice.get("bike_tip")), "inline": False},
+            {"name": "🏃 Running", "value": _field(advice.get("run_tip")), "inline": False},
+            {"name": "🚴 Cycling", "value": _field(advice.get("bike_tip")), "inline": False},
         ],
         "footer": {"text": "Garmin AI Coach — Claude"},
     }
@@ -403,7 +412,7 @@ def build_embed(advice: dict, weekly: bool) -> dict:
 
 def post_error_to_discord(error: Exception):
     embed = {
-        "title": "⚠️ Garmin AI Coach — mislukt",
+        "title": "⚠️ Garmin AI Coach — failed",
         "color": 0x95A5A6,
         "description": f"```{str(error)[:1900]}```",
         "footer": {"text": "Garmin AI Coach — Claude"},
@@ -411,7 +420,7 @@ def post_error_to_discord(error: Exception):
     try:
         post_discord(embed)
     except Exception:
-        pass  # als zelfs de foutmelding niet verstuurd kan worden, is er niets meer te doen
+        pass  # if even the error message can't be sent, there's nothing more to do
 
 
 def main():

@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Stuurt een prompt naar de permanente 'coach' tmux-sessie (gestart door
-entrypoint.sh) en wacht tot Claude het antwoord naar een bestand heeft
-geschreven. Houdt de systeemprompt/tool-cache warm tussen aanroepen — geen
-nieuwe agent-opstart-kosten per cron-run, in tegenstelling tot een verse
-`claude -p`-subprocess per keer.
+"""Sends a prompt to the permanent 'coach' tmux session (started by
+entrypoint.sh) and waits until Claude has written the answer to a file.
+Keeps the system prompt/tool cache warm between calls — no new agent-startup
+cost per cron run, unlike a fresh `claude -p` subprocess each time.
 
-Terminal-scherm-tekst parsen (het eerdere ontwerp) bleek fragiel: Claude kan
-tussentijds tool-calls doen, lang "nadenken", of de output over meerdere
-schermregels laten lopen — elk daarvan brak de eerdere marker/JSON-extractie.
-Een bestand laten schrijven en daarop pollen is veel robuuster: het bestand
-bestaat pas als Claude klaar is met schrijven."""
+Parsing terminal screen text (the earlier design) turned out to be fragile:
+Claude can do intermediate tool calls, "think" for a while, or wrap the
+output across multiple screen lines — any of which broke the earlier
+marker/JSON extraction. Having it write a file and polling for that is much
+more robust: the file only exists once Claude is done writing."""
 
 import os
 import subprocess
@@ -18,7 +17,7 @@ import time
 SESSION = "coach"
 MAX_WAIT_SECONDS = 180
 POLL_INTERVAL = 2
-FILE_STABLE_POLLS = 2  # aantal identieke bestandsgroottes op rij voordat we "klaar" aannemen
+FILE_STABLE_POLLS = 2  # number of identical file sizes in a row before assuming "done"
 
 
 def _tmux(*args: str) -> str:
@@ -32,9 +31,9 @@ def _send_literal_and_enter(text: str):
 
 
 def _clear_session():
-    """Ruimt de conversatie op zodat de volgende cron-run met een schone lei
-    begint — voorkomt onbeperkte contextopbouw in deze langlevende sessie.
-    /clear opent een autocomplete-menu; de losse Enter daarna bevestigt het."""
+    """Clears the conversation so the next cron run starts with a clean
+    slate — prevents unbounded context buildup in this long-lived session.
+    /clear opens an autocomplete menu; the extra Enter afterwards confirms it."""
     _send_literal_and_enter("/clear")
     time.sleep(2)
     _tmux("send-keys", "-t", SESSION, "Enter")
@@ -64,7 +63,7 @@ def ask_and_wait_for_file(prompt: str, output_file: str):
         last_size = size
 
     _clear_session()
-    raise TimeoutError(f"Geen (stabiel) antwoordbestand binnen {MAX_WAIT_SECONDS}s: {output_file}")
+    raise TimeoutError(f"No (stable) answer file within {MAX_WAIT_SECONDS}s: {output_file}")
 
 
 if __name__ == "__main__":
