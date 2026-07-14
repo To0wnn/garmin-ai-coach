@@ -1,0 +1,15 @@
+services:
+  garmin-ai-coach:
+    build: .
+    image: garmin-ai-coach:latest
+    container_name: garmin-ai-coach
+    restart: unless-stopped
+    network_mode: bridge
+    environment:
+      - INFLUXDB_URL=${INFLUXDB_URL}
+      - INFLUXDB_DB=${INFLUXDB_DB:-GarminStats}
+      - LOCAL_TZ=${LOCAL_TZ:-Europe/Amsterdam}
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
+    volumes:
+      - ./coach-home:/home/coach
