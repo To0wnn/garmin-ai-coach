@@ -120,6 +120,7 @@ def build_metrics() -> dict:
         "training_status": _training_status(),
         "lactate_threshold_running": _lactate_threshold(),
         "cycling_hr_zones": _cycling_hr_zones(today, last_28d),
+        "baseline_deviation": _baseline_deviation(),
     }
 
 
@@ -150,6 +151,52 @@ def _activities_today() -> list[dict]:
             }
         )
     return result
+
+
+def _stddev(vals: list[float]) -> float | None:
+    if len(vals) < 2:
+        return None
+    mean_val = sum(vals) / len(vals)
+    variance = sum((v - mean_val) ** 2 for v in vals) / (len(vals) - 1)
+    return variance**0.5
+
+
+def _baseline_deviation() -> dict:
+    """Compares today's HRV and resting HR against a 28-day rolling baseline
+    (mean + stddev). Garmin's own training_readiness score already folds
+    similar signals together as a black box — this gives the LLM an explicit,
+    concrete number to reference instead ("HRV is 1.3 SD below your 28-day
+    baseline") rather than only a bare 0-100 score."""
+    today_hrv_rows = influx_query("SELECT mean(hrvValue) FROM HRV_Intraday WHERE time > now() - 1d")
+    today_hrv = today_hrv_rows[0].get("mean") if today_hrv_rows else None
+
+    daily_hrv_rows = influx_query(
+        "SELECT mean(hrvValue) FROM HRV_Intraday WHERE time > now() - 29d AND time < now() - 1d "
+        "GROUP BY time(1d) fill(none)"
+    )
+    hrv_history = [r["mean"] for r in daily_hrv_rows if r.get("mean") is not None]
+
+    rhr_rows = daily_stats_window(1, 28)
+    rhr_history = [r["restingHeartRate"] for r in rhr_rows if r.get("restingHeartRate") is not None]
+    today_rhr_rows = daily_stats_window(0, 1)
+    today_rhr = today_rhr_rows[0].get("restingHeartRate") if today_rhr_rows else None
+
+    result = {}
+    if today_hrv is not None and len(hrv_history) >= 7:
+        hrv_mean = sum(hrv_history) / len(hrv_history)
+        hrv_sd = _stddev(hrv_history)
+        result["hrv_today"] = round(today_hrv, 1)
+        result["hrv_28d_baseline_mean"] = round(hrv_mean, 1)
+        result["hrv_deviation_sd"] = round((today_hrv - hrv_mean) / hrv_sd, 1) if hrv_sd else None
+
+    if today_rhr is not None and len(rhr_history) >= 7:
+        rhr_mean = sum(rhr_history) / len(rhr_history)
+        rhr_sd = _stddev(rhr_history)
+        result["resting_hr_today"] = today_rhr
+        result["resting_hr_28d_baseline_mean"] = round(rhr_mean, 1)
+        result["resting_hr_deviation_sd"] = round((today_rhr - rhr_mean) / rhr_sd, 1) if rhr_sd else None
+
+    return result or {"available": False}
 
 
 def _training_readiness() -> dict:
@@ -284,7 +331,14 @@ def build_prompt(metrics: dict, weekly: bool) -> str:
     session of that sport, give at most a short recovery tip, and explicitly mention what was
     already done (type/duration/distance).
   For the sport not done at all today: give normal advice. If the list is empty: give a
-  suggestion for both sports."""
+  suggestion for both sports.
+- baseline_deviation.hrv_deviation_sd / resting_hr_deviation_sd: today's HRV/resting HR
+  expressed as standard deviations from your 28-day rolling baseline. Roughly: within ±1 SD
+  is normal day-to-day variation, beyond ±1 SD is a notable deviation worth mentioning,
+  beyond ±2 SD is a strong signal (HRV notably below baseline or RHR notably above baseline
+  both suggest incomplete recovery — treat this as at least as important as Garmin's own
+  training_readiness score, since it's a more transparent, directly-computed signal). If
+  "available": false, this data isn't available yet (needs at least 7 days of history)."""
 
     recovery_note = (
         "If running/cycling is discouraged today (low readiness, high ACWR, or training_status "
@@ -311,7 +365,9 @@ def build_prompt(metrics: dict, weekly: bool) -> str:
     )
 
     return f"""{role} Always give running and cycling advice in separate fields, never mixed
-into one.
+into one. Be evidence-based: every recommendation must reference a specific number from the
+data below (e.g. "ACWR is 0.9" or "HRV is 1.3 SD below your baseline"), not vague statements
+like "your body seems tired".
 {recovery_note}
 
 Use this Garmin data (already pre-computed — no raw time series, don't use any numbers other

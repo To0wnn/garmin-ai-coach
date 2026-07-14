@@ -53,7 +53,8 @@ own, every morning at 06:00 UTC (adjustable via `LOCAL_TZ`).
 
 - **Daily**: short status update + concrete advice per sport (workout type, duration, target heart rate/pace)
 - **Sunday**: in-depth weekly review with trend comparison (this week vs. last week vs. 4-week average)
-- Takes sleep, training load (ACWR), and whether you've already trained that day into account
+- Takes sleep, training load (ACWR), HRV/resting-HR baseline deviation, and whether you've already trained that day into account
+- Evidence-based: every recommendation references a specific number, not vague statements
 
 ## How it works
 
