@@ -114,6 +114,30 @@ def sleep_summary_window(days_back: int, window_days: int) -> list[dict]:
     return influx_query(q)
 
 
+def _body_battery_current() -> dict:
+    """The daily high/low from DailyStats are day-summary values, not the current
+    level — e.g. a fresh morning peak of 99 stays displayed as "today's battery"
+    all day even after hours of draining, misleadingly far from what's actually
+    on the watch right now. BodyBatteryIntraday has 5-min-interval readings, so
+    the most recent one is a much closer (though not perfectly live — bounded by
+    how recently the watch itself synced, see DeviceSync/wait_for_fresh_sync)
+    approximation of "right now"."""
+    rows = influx_query(
+        f'SELECT BodyBatteryLevel FROM "BodyBatteryIntraday" WHERE "Device" = \'{WATCH_DEVICE}\' '
+        f'ORDER BY time DESC LIMIT 1'
+    )
+    if not rows or rows[0].get("BodyBatteryLevel") is None:
+        return {"available": False}
+    row = rows[0]
+    ts = datetime.fromisoformat(row["time"].replace("Z", "+00:00"))
+    age_minutes = (datetime.now(timezone.utc) - ts).total_seconds() / 60
+    return {
+        "available": True,
+        "level": row["BodyBatteryLevel"],
+        "age_minutes": round(age_minutes),
+    }
+
+
 def build_metrics() -> dict:
     today = daily_stats_window(0, 1)
     last_7d = daily_stats_window(0, 7)
@@ -134,6 +158,7 @@ def build_metrics() -> dict:
         "today": {
             "resting_hr": today[0].get("restingHeartRate") if today else None,
             "steps": today[0].get("totalSteps") if today else None,
+            "body_battery_current": _body_battery_current(),
             "body_battery_high": today[0].get("bodyBatteryHighestValue") if today else None,
             "body_battery_low": today[0].get("bodyBatteryLowestValue") if today else None,
             "sleep_hours": today_sleep_h,

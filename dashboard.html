@@ -331,7 +331,13 @@ function renderTiles(m) {
       (today.sleep_score != null ? `score ${today.sleep_score}` : "") +
       (dev != null ? ` · ${dev >= 0 ? "+" : ""}${dev}h vs 6d avg` : ""), dev != null && dev >= 0));
   }
-  if (today.body_battery_high != null) {
+  const bbCurrent = today.body_battery_current;
+  if (bbCurrent && bbCurrent.available) {
+    const ageLabel = bbCurrent.age_minutes < 60 ? `${bbCurrent.age_minutes} min ago` : `${Math.round(bbCurrent.age_minutes / 60)}h ago`;
+    const range = (today.body_battery_high != null && today.body_battery_low != null)
+      ? ` · today's range ${today.body_battery_low}-${today.body_battery_high}` : "";
+    c.append(tile("i-battery", "Body battery", bbCurrent.level, null, `as of ${ageLabel}${range}`, null));
+  } else if (today.body_battery_high != null) {
     c.append(tile("i-battery", "Body battery", today.body_battery_high, null,
       today.body_battery_low != null ? `low ${today.body_battery_low}` : null, null));
   }
