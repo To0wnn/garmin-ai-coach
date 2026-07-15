@@ -153,6 +153,10 @@ def build_metrics() -> dict:
         "cycling_hr_zones": _cycling_hr_zones(today, last_28d),
         "baseline_deviation": _baseline_deviation(),
         "recent_activities_14d": _activities_since(local_midnight_utc(LOG_HISTORY_DAYS - 1)),
+        "intensity_distribution_7d": _intensity_distribution(7),
+        "intensity_distribution_28d": _intensity_distribution(28),
+        "training_load_by_sport": _training_load_by_sport(),
+        "vo2max": _vo2max_trend(),
     }
 
 
@@ -187,6 +191,106 @@ def _activities_since(start: datetime) -> list[dict]:
             }
         )
     return result
+
+
+def _intensity_distribution(days: int) -> dict:
+    """Polarized/pyramidal training theory: recreational endurance athletes do best
+    with most volume easy (zone 1-2) and minimal time in the "grey zone" (zone 3) —
+    the classic failure mode is easy days drifting into moderate effort. hrTimeInZone_*
+    (seconds per activity) is already recorded per activity by garmin-fetch-data, so
+    this is a straight sum-and-percentage over the window, no new data source needed."""
+    start = local_midnight_utc(days - 1)
+    rows = influx_query(
+        f'SELECT hrTimeInZone_1, hrTimeInZone_2, hrTimeInZone_3, hrTimeInZone_4, hrTimeInZone_5 '
+        f'FROM "ActivitySummary" WHERE time >= \'{start.isoformat()}\' AND "Device" = \'{WATCH_DEVICE}\''
+    )
+    zones = [0.0] * 5
+    for r in rows:
+        for i in range(5):
+            zones[i] += r.get(f"hrTimeInZone_{i + 1}") or 0
+    total = sum(zones)
+    if total == 0:
+        return {"available": False}
+    low_pct = round((zones[0] + zones[1]) / total * 100)
+    mid_pct = round(zones[2] / total * 100)
+    high_pct = round((zones[3] + zones[4]) / total * 100)
+    return {
+        "available": True,
+        "low_zone1_2_pct": low_pct,
+        "mid_zone3_pct": mid_pct,
+        "high_zone4_5_pct": high_pct,
+        "total_hr_zone_minutes": round(total / 60),
+    }
+
+
+def _training_load_by_sport() -> dict:
+    """Garmin's own ACWR (training_status.acute_chronic_load_ratio) combines running
+    and cycling into one number, which can hide a sport-specific ramp (e.g. cycling
+    load spiking while running stays flat). activityTrainingLoad is Garmin's own
+    per-activity load figure (EPOC-based), already recorded — this sums it per sport
+    over a 7d/28d-weekly-average window as a lighter per-sport signal alongside the
+    combined ACWR, not a replacement for it (Garmin's ACWR uses different weighting
+    internally, so don't call this figure "ACWR" too)."""
+    start_7d = local_midnight_utc(6)
+    start_28d = local_midnight_utc(27)
+    result = {}
+    for sport, types in (
+        ("running", ["running"]),
+        ("cycling", ["road_biking", "indoor_cycling", "mountain_biking", "gravel_cycling", "cycling"]),
+    ):
+        type_filter = " OR ".join(f"activityType = '{t}'" for t in types)
+        rows_7d = influx_query(
+            f'SELECT activityTrainingLoad FROM "ActivitySummary" '
+            f'WHERE time >= \'{start_7d.isoformat()}\' AND "Device" = \'{WATCH_DEVICE}\' AND ({type_filter})'
+        )
+        rows_28d = influx_query(
+            f'SELECT activityTrainingLoad FROM "ActivitySummary" '
+            f'WHERE time >= \'{start_28d.isoformat()}\' AND "Device" = \'{WATCH_DEVICE}\' AND ({type_filter})'
+        )
+        load_7d = sum(r.get("activityTrainingLoad") or 0 for r in rows_7d)
+        load_28d = sum(r.get("activityTrainingLoad") or 0 for r in rows_28d)
+        weekly_avg_28d = load_28d / 4
+        result[sport] = {
+            "load_last_7d": round(load_7d),
+            "weekly_avg_last_28d": round(weekly_avg_28d),
+            "load_ramp_ratio": round(load_7d / weekly_avg_28d, 2) if weekly_avg_28d else None,
+        }
+    return result
+
+
+def _vo2max_trend() -> dict:
+    """Latest known VO2max per sport plus the value from ~28 days ago for a trend —
+    VO2_max_value (running) and VO2_max_value_cycling only update on days Garmin can
+    compute them (not every activity), so pick the most recent non-null reading in
+    each window rather than assuming the newest row has both."""
+    def latest_nonnull(field: str, before_days: int = 0) -> float | None:
+        end_clause = f'AND time < \'{local_midnight_utc(before_days).isoformat()}\'' if before_days else ""
+        rows = influx_query(
+            f'SELECT {field} FROM "VO2_Max" WHERE "Device" = \'{WATCH_DEVICE}\' {end_clause} '
+            f'ORDER BY time DESC LIMIT 20'
+        )
+        for r in rows:
+            if r.get(field) is not None:
+                return r[field]
+        return None
+
+    running_now = latest_nonnull("VO2_max_value")
+    running_28d_ago = latest_nonnull("VO2_max_value", before_days=28)
+    cycling_now = latest_nonnull("VO2_max_value_cycling")
+    cycling_28d_ago = latest_nonnull("VO2_max_value_cycling", before_days=28)
+
+    result = {}
+    if running_now is not None:
+        result["running"] = {
+            "current": running_now,
+            "delta_28d": round(running_now - running_28d_ago, 1) if running_28d_ago is not None else None,
+        }
+    if cycling_now is not None:
+        result["cycling"] = {
+            "current": cycling_now,
+            "delta_28d": round(cycling_now - cycling_28d_ago, 1) if cycling_28d_ago is not None else None,
+        }
+    return result or {"available": False}
 
 
 def _stddev(vals: list[float]) -> float | None:
@@ -342,8 +446,8 @@ JSON_SCHEMA_DAILY = """{
 }"""
 
 JSON_SCHEMA_WEEKLY = """{
-  "performance": "<2-3 sentences overall weekly assessment, referencing the trend across recent_activities_14d and coach_log>",
-  "recovery": "<2-3 sentences, explicitly mention the ACWR ratio>",
+  "performance": "<2-3 sentences overall weekly assessment, referencing the trend across recent_activities_14d, coach_log, vo2max, and intensity_distribution_7d/28d>",
+  "recovery": "<2-3 sentences, explicitly mention the ACWR ratio and training_load_by_sport>",
   "run_advice": "<2-3 sentences: concrete plan for the coming week (e.g. which days for intervals/tempo/long run vs. recovery), not just a single tip>",
   "bike_advice": "<2-3 sentences: concrete plan for the coming week (e.g. which days for intervals/tempo/long ride vs. recovery), not just a single tip>",
   "watch_point": "<1-2 sentences, or 'Nothing notable'>",
@@ -363,9 +467,36 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
   If "available": false or "data_stale": true is set: this data is missing or stale
   (more than 36 hours old) — don't rely on it, fall back on sleep/resting HR/ACWR.
 - training_status.acute_chronic_load_ratio (ACWR): <0.8 = too little load (undertrained),
-  0.8-1.3 = healthy zone, 1.3-1.5 = caution (rising risk), >1.5 = elevated injury risk
-  (ramped up too fast). This covers overall load (running + cycling combined).
+  0.8-1.3 = healthy zone, 1.3-1.5 = caution (ramping up), >1.5 = ramping up fast — treat
+  these as a load-ramp guardrail (how fast load is rising vs. your recent average), not as
+  a direct injury prediction; the science behind the original "injury risk" framing has been
+  formally challenged, so don't state it as established fact. This covers overall load
+  (running + cycling combined) — see training_load_by_sport for a per-sport view, which can
+  show one sport ramping while the combined figure still looks fine.
+- training_load_by_sport.<running|cycling>.load_ramp_ratio: this week's training-load sum for
+  that sport specifically, divided by its 4-week weekly average — same interpretation bands as
+  ACWR above, but per sport (Garmin's own ACWR is combined). Don't call this figure "ACWR" —
+  it's a lighter, differently-weighted approximation using Garmin's per-activity load number.
+  null means not enough load in the last 28 days to compute a meaningful ratio. Treat a very
+  high ratio (e.g. >3) with caution if weekly_avg_last_28d is small (e.g. under ~30) — with a
+  low, sparse baseline (that sport trained only occasionally) a single session this week can
+  produce a misleadingly extreme ratio; describe it as "picked up this sport again" rather than
+  a dramatic load spike in that case.
 - training_status.status: Garmin's classification (e.g. PRODUCTIVE, PEAKING, OVERREACHING, RECOVERY).
+- intensity_distribution_7d / intensity_distribution_28d: percentage of all heart-rate-zone
+  time (across all activities in the window) spent low (zone 1-2, easy), mid (zone 3, "grey
+  zone" — neither properly easy nor a real hard effort), or high (zone 4-5). Recreational
+  endurance athletes generally do best with a polarized/pyramidal distribution: mostly easy
+  volume (roughly 75-80%+ low), a small high-intensity portion, and minimal zone 3 — zone 3
+  creep (easy days drifting into moderate effort) is a common, coachable mistake. If
+  mid_zone3_pct is notably elevated (e.g. above ~20-25%) and there's been no explicit hard
+  session logged, mention it as a pattern to watch, especially in the weekly review. If
+  "available": false, not enough HR-zone data in the window yet.
+- vo2max.running / vo2max.cycling: current estimated VO2max and the change over the last 28
+  days (delta_28d), when available — a slow multi-week rise is a good sign of improving
+  aerobic fitness, a drop of more than ~1-2 points can reflect detraining or incomplete
+  recovery. Don't over-interpret single-day noise; this is more useful as a slow trend than
+  a daily signal, so mention it mainly in the weekly review unless it moved sharply.
 - lactate_threshold_running.threshold_hr_running: exact, measured heart rate threshold for running.
 - lactate_threshold_running.threshold_pace_min_per_km: exact, measured threshold pace for running,
   ALREADY FORMATTED as "M:SS min/km" (e.g. "5:41 min/km") — reuse this notation verbatim,
