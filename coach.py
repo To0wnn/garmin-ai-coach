@@ -228,9 +228,12 @@ def _activities_since(start: datetime) -> list[dict]:
         if key in seen:  # garmin-fetch-data can write an activity twice on re-sync
             continue
         seen.add(key)
+        ts_utc = datetime.fromisoformat(r["time"].replace("Z", "+00:00"))
+        ts_local = ts_utc.astimezone(LOCAL_TZ)
         result.append(
             {
                 "date": r["time"][:10],
+                "local_time": ts_local.strftime("%H:%M"),
                 "type": activity_type,
                 "name": r.get("activityName"),
                 "distance_km": round(r["distance"] / 1000, 1) if r.get("distance") else None,
@@ -731,7 +734,13 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
   fine on their own — a high body battery after little sleep mostly reflects current energy,
   not full physical recovery.
 - today.activities_already_done_today: sport activities ALREADY completed since local midnight
-  today (type, name, distance, duration in minutes, avg heart rate, calories). The user
+  today (type, name, distance, duration in minutes, avg heart rate, calories, local_time —
+  the clock time, e.g. "05:55", the activity started). If you mention time of day (morning/
+  afternoon/evening) for a session, base it strictly on local_time — never assume or guess
+  "this morning" just because it's the first/only session shown; check the actual clock time
+  (roughly: before 12:00 = morning, 12:00-18:00 = afternoon, after 18:00 = evening). This
+  applies equally when describing multiple sessions the same day (e.g. one at 05:55 and one at
+  13:50 is "one this morning, one this afternoon", not "two rides this morning"). The user
   regularly trains the same sport twice in one day (e.g. a short morning ride + a longer
   evening ride) — "already done once" does NOT automatically mean "done for today". Assess
   per sport whether another session today is still reasonable:
@@ -758,8 +767,8 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
   you just wrote in run_tip/bike_tip, not a separate or vaguer suggestion — e.g. if run_tip
   says "40 minute easy run, HR 130-150", run_target must be
   {"duration_min": 40, "hr_min": 130, "hr_max": 150}.
-- recent_activities_14d: full activity history of the last 14 days (date, type, duration,
-  avg HR), NOT necessarily one entry per day — there can be, and often are, rest days with no
+- recent_activities_14d: full activity history of the last 14 days (date, local_time, type,
+  duration, avg HR), NOT necessarily one entry per day — there can be, and often are, rest days with no
   entry at all in between. Use this to vary the workout type sensibly instead of suggesting the
   same generic endurance session every day — e.g. if there's been no intensity in several days
   and readiness/ACWR allow it, a tempo or interval session is appropriate; if there have already
