@@ -53,11 +53,19 @@ cat > /app/.env.runtime <<EOF
 export TMUX_TMPDIR="$TMUX_TMPDIR"
 export INFLUXDB_URL="${INFLUXDB_URL:-}"
 export INFLUXDB_DB="${INFLUXDB_DB:-GarminStats}"
+export WATCH_DEVICE="${WATCH_DEVICE:-fenix 8 - 47mm, AMOLED}"
 export LANGUAGE="${LANGUAGE:-English}"
 export LOCAL_TZ="${LOCAL_TZ:-Europe/Amsterdam}"
 export DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 EOF
 chmod 600 /app/.env.runtime
+
+# Read-only dashboard, background process — best-effort: if it dies the
+# container keeps running since cron/coaching (the higher-priority function)
+# is unaffected. No process supervision added for one background process.
+gosu coach env HOME=/home/coach INFLUXDB_URL="${INFLUXDB_URL:-}" INFLUXDB_DB="${INFLUXDB_DB:-GarminStats}" \
+    WATCH_DEVICE="${WATCH_DEVICE:-fenix 8 - 47mm, AMOLED}" DASHBOARD_PORT="${DASHBOARD_PORT:-8420}" \
+    python3 /app/dashboard.py &
 
 # Install the cron schedule and run the daemon in the foreground so the
 # container stays alive (this IS the container's main process). cron_daily.sh

@@ -13,6 +13,8 @@ RUN useradd -m -s /bin/sh coach
 WORKDIR /app
 COPY coach.py /app/coach.py
 COPY session_ask.py /app/session_ask.py
+COPY dashboard.py /app/dashboard.py
+COPY dashboard.html /app/dashboard.html
 COPY entrypoint.sh /app/entrypoint.sh
 COPY cron_daily.sh /app/cron_daily.sh
 RUN mkdir -p /app/output && \

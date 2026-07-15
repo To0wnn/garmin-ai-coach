@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Garmin AI Coach</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: #14151a; color: #e6e6e6;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 1000px; margin-inline: auto;
+  }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .sub { color: #9a9ba3; font-size: 0.9rem; margin-bottom: 24px; }
+  .card {
+    background: #1c1e26; border: 1px solid #2b2d38; border-radius: 10px;
+    padding: 16px 20px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 1rem; margin: 0 0 12px; color: #c7c9d4; }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+  }
+  .badge-green { background: #1e4028; color: #4ade80; }
+  .badge-yellow { background: #40391e; color: #facc15; }
+  .badge-orange { background: #402e1e; color: #fb923c; }
+  .badge-red { background: #401e1e; color: #f87171; }
+  .badge-gray { background: #2b2d38; color: #9a9ba3; }
+  .field { margin-bottom: 10px; }
+  .field-label { font-size: 0.8rem; color: #9a9ba3; margin-bottom: 2px; }
+  .field-value { line-height: 1.5; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  canvas { max-width: 100%; }
+  .timeline { display: flex; gap: 4px; flex-wrap: wrap; }
+  .day-box {
+    width: 22px; height: 22px; border-radius: 4px; cursor: default;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.6rem; color: #14151a; font-weight: 700;
+  }
+  .day-box[data-color="green"] { background: #4ade80; }
+  .day-box[data-color="yellow"] { background: #facc15; }
+  .day-box[data-color="red"] { background: #f87171; }
+  .day-box[data-color="gray"] { background: #3a3c48; color: #9a9ba3; }
+  .day-box[data-color="pending"] {
+    background: repeating-linear-gradient(45deg, #2b2d38, #2b2d38 3px, #22232c 3px, #22232c 6px);
+  }
+  .legend { display: flex; gap: 14px; font-size: 0.8rem; color: #9a9ba3; margin-top: 8px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #2b2d38; }
+  th { color: #9a9ba3; font-weight: 500; }
+  .empty { color: #9a9ba3; font-style: italic; }
+  .history-entry { border-bottom: 1px solid #2b2d38; padding: 10px 0; }
+  .history-entry:last-child { border-bottom: none; }
+  .history-date { font-size: 0.8rem; color: #9a9ba3; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+  <h1>🏃🚴 Garmin AI Coach</h1>
+  <div class="sub" id="subtitle">Loading…</div>
+
+  <div class="card" id="latest-card">
+    <h2>Latest advice</h2>
+    <div id="latest-body" class="empty">Loading…</div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>Intensity distribution (7d)</h2>
+      <canvas id="chart-intensity" width="440" height="180"></canvas>
+    </div>
+    <div class="card">
+      <h2>VO2max trend</h2>
+      <canvas id="chart-vo2" width="440" height="180"></canvas>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Adherence timeline (last 14 days)</h2>
+    <div class="timeline" id="adherence-timeline"></div>
+    <div class="legend">
+      <span><i style="background:#4ade80"></i> followed plan</span>
+      <span><i style="background:#facc15"></i> deviated</span>
+      <span><i style="background:#f87171"></i> missed</span>
+      <span><i style="background:#3a3c48"></i> rest as advised</span>
+      <span><i style="background:repeating-linear-gradient(45deg,#2b2d38,#2b2d38 2px,#22232c 2px,#22232c 4px)"></i> pending</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Recent activities</h2>
+    <div id="activities-body" class="empty">Loading…</div>
+  </div>
+
+  <div class="card">
+    <h2>Advice history</h2>
+    <div id="history-body" class="empty">Loading…</div>
+  </div>
+
+<script>
+const COLOR_HEX = { green: "#4ade80", yellow: "#facc15", orange: "#fb923c", red: "#f87171", gray: "#3a3c48" };
+
+function badge(color) {
+  const c = (color || "gray").toLowerCase();
+  return `<span class="badge badge-${c}">${c}</span>`;
+}
+
+function field(label, value) {
+  if (!value) return "";
+  return `<div class="field"><div class="field-label">${label}</div><div class="field-value">${value}</div></div>`;
+}
+
+function renderLatest(entry) {
+  const el = document.getElementById("latest-body");
+  if (!entry) {
+    el.innerHTML = '<span class="empty">No advice yet — check back after tomorrow\'s 06:00 run.</span>';
+    return;
+  }
+  const a = entry.advice || {};
+  const kindLabel = entry.weekly ? "Weekly review" : "Daily check-in";
+  let html = `<div class="field-label">${entry.date} · ${kindLabel} ${badge(a.color)}</div>`;
+  if (entry.weekly) {
+    html += field("Performance", a.performance) + field("Recovery", a.recovery) +
+            field("🏃 Running", a.run_advice) + field("🚴 Cycling", a.bike_advice) +
+            field("⚠️ Watch point", a.watch_point);
+  } else {
+    html += field("Status", a.status) + field("🏃 Running", a.run_tip) + field("🚴 Cycling", a.bike_tip);
+  }
+  el.innerHTML = html;
+}
+
+function renderHistory(history) {
+  const el = document.getElementById("history-body");
+  if (!history.length) { el.innerHTML = '<span class="empty">No history yet.</span>'; return; }
+  el.innerHTML = history.slice().reverse().map(entry => {
+    const a = entry.advice || {};
+    const kindLabel = entry.weekly ? "Weekly" : "Daily";
+    const summary = entry.weekly ? a.performance : a.status;
+    return `<div class="history-entry">
+      <div class="history-date">${entry.date} · ${kindLabel} ${badge(a.color)}</div>
+      <div class="field-value">${summary || ""}</div>
+    </div>`;
+  }).join("");
+}
+
+function renderActivities(activities) {
+  const el = document.getElementById("activities-body");
+  if (!activities || !activities.length) { el.innerHTML = '<span class="empty">No activities in the last 14 days.</span>'; return; }
+  let rows = activities.map(a => `<tr>
+    <td>${a.date}</td><td>${a.type}</td><td>${a.name || "-"}</td>
+    <td>${a.distance_km ?? "-"} km</td><td>${a.duration_min ?? "-"} min</td><td>${a.avg_hr ?? "-"}</td>
+  </tr>`).join("");
+  el.innerHTML = `<table><thead><tr><th>Date</th><th>Type</th><th>Name</th><th>Distance</th><th>Duration</th><th>Avg HR</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderTimeline(history) {
+  const el = document.getElementById("adherence-timeline");
+  const daily = history.filter(e => !e.weekly).slice(-14);
+  if (!daily.length) { el.innerHTML = '<span class="empty">No data yet.</span>'; return; }
+  el.innerHTML = daily.map(entry => {
+    const adh = entry.adherence;
+    if (!adh) return `<div class="day-box" data-color="pending" title="${entry.date}: pending"></div>`;
+    const d = entry.date.slice(5); // MM-DD
+    return `<div class="day-box" data-color="${adh.day_color}" title="${entry.date}
+run: ${adh.run.color}${adh.run.actual_duration_min != null ? " (" + adh.run.actual_duration_min + " min, " + (adh.run.actual_avg_hr ?? "-") + " bpm)" : ""}
+bike: ${adh.bike.color}${adh.bike.actual_duration_min != null ? " (" + adh.bike.actual_duration_min + " min, " + (adh.bike.actual_avg_hr ?? "-") + " bpm)" : ""}">${d.split("-")[1]}</div>`;
+  }).join("");
+}
+
+function drawBarChart(canvas, segments) {
+  // segments: [{label, value(0-100), color}]
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!segments) {
+    ctx.fillStyle = "#9a9ba3"; ctx.font = "13px sans-serif";
+    ctx.fillText("Not enough data yet", 10, h / 2);
+    return;
+  }
+  const barH = 36, gap = 18, top = 20;
+  segments.forEach((s, i) => {
+    const y = top + i * (barH + gap);
+    ctx.fillStyle = "#2b2d38";
+    ctx.fillRect(10, y, w - 70, barH);
+    ctx.fillStyle = s.color;
+    ctx.fillRect(10, y, (w - 70) * (s.value / 100), barH);
+    ctx.fillStyle = "#e6e6e6"; ctx.font = "13px sans-serif";
+    ctx.fillText(s.label, 10, y - 5);
+    ctx.fillText(s.value + "%", w - 55, y + barH / 2 + 4);
+  });
+}
+
+function drawLineChart(canvas, series) {
+  // series: {label: [{x: dateStr, y: number}], ...}
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const keys = Object.keys(series).filter(k => series[k] && series[k].length);
+  if (!keys.length) {
+    ctx.fillStyle = "#9a9ba3"; ctx.font = "13px sans-serif";
+    ctx.fillText("Not enough data yet", 10, h / 2);
+    return;
+  }
+  const allVals = keys.flatMap(k => series[k].map(p => p.y));
+  const min = Math.min(...allVals) - 1, max = Math.max(...allVals) + 1;
+  const colors = { running: "#4ade80", cycling: "#60a5fa" };
+  const pad = 30;
+  keys.forEach(k => {
+    const pts = series[k];
+    ctx.strokeStyle = colors[k] || "#e6e6e6";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach((p, i) => {
+      const x = pad + (i / Math.max(pts.length - 1, 1)) * (w - pad * 2);
+      const y = h - pad - ((p.y - min) / (max - min)) * (h - pad * 2);
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.fillStyle = colors[k] || "#e6e6e6"; ctx.font = "12px sans-serif";
+    ctx.fillText(`${k}: ${pts[pts.length - 1].y}`, pad, 16 + keys.indexOf(k) * 14);
+  });
+}
+
+async function load() {
+  const res = await fetch("/api/data");
+  const data = await res.json();
+  if (data.error) {
+    document.getElementById("subtitle").textContent = "Error loading data: " + data.error;
+    return;
+  }
+  document.getElementById("subtitle").textContent = "Local Garmin training data + Claude-generated advice";
+  renderLatest(data.latest);
+  renderHistory(data.history);
+  renderActivities(data.metrics.recent_activities_14d);
+  renderTimeline(data.history);
+
+  const dist = data.metrics.intensity_distribution_7d;
+  drawBarChart(document.getElementById("chart-intensity"), dist && dist.available ? [
+    { label: "Low (zone 1-2)", value: dist.low_zone1_2_pct, color: "#4ade80" },
+    { label: "Mid (zone 3)", value: dist.mid_zone3_pct, color: "#facc15" },
+    { label: "High (zone 4-5)", value: dist.high_zone4_5_pct, color: "#f87171" },
+  ] : null);
+
+  const vo2 = data.metrics.vo2max;
+  const series = {};
+  if (vo2 && vo2.running) series.running = [{ x: "28d ago", y: vo2.running.current - (vo2.running.delta_28d || 0) }, { x: "now", y: vo2.running.current }];
+  if (vo2 && vo2.cycling) series.cycling = [{ x: "28d ago", y: vo2.cycling.current - (vo2.cycling.delta_28d || 0) }, { x: "now", y: vo2.cycling.current }];
+  drawLineChart(document.getElementById("chart-vo2"), series);
+}
+
+load();
+</script>
+</body>
+</html>

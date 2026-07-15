@@ -8,9 +8,13 @@ services:
     environment:
       - INFLUXDB_URL=${INFLUXDB_URL}
       - INFLUXDB_DB=${INFLUXDB_DB:-GarminStats}
+      - WATCH_DEVICE=${WATCH_DEVICE:-fenix 8 - 47mm, AMOLED}
       - LOCAL_TZ=${LOCAL_TZ:-Europe/Amsterdam}
       - LANGUAGE=${LANGUAGE:-English}
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
+      - DASHBOARD_PORT=${DASHBOARD_PORT:-8420}
+    ports:
+      - "4874:8420"
     volumes:
       - ./coach-home:/home/coach

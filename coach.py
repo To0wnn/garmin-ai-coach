@@ -31,6 +31,11 @@ OUTPUT_FILE = "/app/output/advies.json"
 LOG_FILE = os.path.expanduser("~/coach_log.json")
 LOG_HISTORY_DAYS = 14
 
+SPORT_TYPES = {
+    "running": ["running"],
+    "cycling": ["road_biking", "indoor_cycling", "mountain_biking", "gravel_cycling", "cycling"],
+}
+
 
 def local_midnight_utc(days_ago: int = 0) -> datetime:
     """Midnight in the local timezone, N days ago, converted to UTC."""
@@ -234,10 +239,7 @@ def _training_load_by_sport() -> dict:
     start_7d = local_midnight_utc(6)
     start_28d = local_midnight_utc(27)
     result = {}
-    for sport, types in (
-        ("running", ["running"]),
-        ("cycling", ["road_biking", "indoor_cycling", "mountain_biking", "gravel_cycling", "cycling"]),
-    ):
+    for sport, types in SPORT_TYPES.items():
         type_filter = " OR ".join(f"activityType = '{t}'" for t in types)
         rows_7d = influx_query(
             f'SELECT activityTrainingLoad FROM "ActivitySummary" '
@@ -393,10 +395,8 @@ def _cycling_hr_zones(today: list[dict], last_28d: list[dict]) -> dict:
     resting_hr = (today[0].get("restingHeartRate") if today else None) or avg(last_28d, "restingHeartRate")
     # Only cycling activities for max HR — running typically gives 5-10 bpm higher
     # peaks and would skew the cycling zones.
-    max_hr_rows = influx_query(
-        "SELECT max(maxHR) FROM ActivitySummary WHERE time > now() - 90d "
-        "AND (activityType = 'road_biking' OR activityType = 'indoor_cycling' OR activityType = 'mountain_biking')"
-    )
+    cycling_filter = " OR ".join(f"activityType = '{t}'" for t in SPORT_TYPES["cycling"])
+    max_hr_rows = influx_query(f"SELECT max(maxHR) FROM ActivitySummary WHERE time > now() - 90d AND ({cycling_filter})")
     max_hr = max_hr_rows[0].get("max") if max_hr_rows else None
     if not resting_hr or not max_hr:
         return {"available": False}
@@ -410,6 +410,69 @@ def _cycling_hr_zones(today: list[dict], last_28d: list[dict]) -> dict:
         "zone4_threshold_bpm": [round(resting_hr + reserve * 0.8), round(resting_hr + reserve * 0.9)],
         "zone5_vo2max_bpm": [round(resting_hr + reserve * 0.9), max_hr],
     }
+
+
+_COLOR_RANK = {"red": 3, "yellow": 2, "green": 1, "gray": 0}
+
+
+def _compute_sport_adherence(target: dict | None, actual_activities: list[dict], sport: str) -> dict:
+    """Compares a structured run_target/bike_target (written the day the advice was
+    given) against what was actually logged that calendar day. See SPORT_TYPES for
+    the sport->activityType grouping (shared with _training_load_by_sport)."""
+    matching = [a for a in actual_activities if a.get("type") in SPORT_TYPES[sport]]
+    any_activity = bool(actual_activities)
+
+    if target is None:
+        color = "yellow" if matching or any_activity else "gray"
+        return {"color": color, "target": None, "actual_duration_min": None, "actual_avg_hr": None}
+
+    if not matching:
+        color = "yellow" if any_activity else "red"
+        return {"color": color, "target": target, "actual_duration_min": None, "actual_avg_hr": None}
+
+    total_duration = sum(a.get("duration_min") or 0 for a in matching)
+    hr_values = [(a.get("duration_min") or 0, a.get("avg_hr")) for a in matching if a.get("avg_hr") is not None]
+    weighted_hr = (
+        round(sum(d * hr for d, hr in hr_values) / sum(d for d, hr in hr_values), 1)
+        if hr_values and sum(d for d, hr in hr_values) > 0
+        else None
+    )
+
+    duration_ratio = total_duration / target["duration_min"] if target.get("duration_min") else None
+    hr_ok = weighted_hr is not None and (target["hr_min"] - 5) <= weighted_hr <= (target["hr_max"] + 5)
+    duration_ok = duration_ratio is not None and 0.75 <= duration_ratio <= 1.35
+
+    color = "green" if duration_ok and hr_ok else "yellow"
+    return {
+        "color": color,
+        "target": target,
+        "actual_duration_min": total_duration,
+        "actual_avg_hr": weighted_hr,
+    }
+
+
+def _compute_adherence(target_entry: dict, actual_activities: list[dict]) -> dict:
+    advice = target_entry.get("advice", {})
+    run = _compute_sport_adherence(advice.get("run_target"), actual_activities, "running")
+    bike = _compute_sport_adherence(advice.get("bike_target"), actual_activities, "cycling")
+    day_color = max((run["color"], bike["color"]), key=lambda c: _COLOR_RANK[c])
+    return {"run": run, "bike": bike, "day_color": day_color}
+
+
+def _backfill_adherence(entries: list[dict]) -> list[dict]:
+    """Yesterday's advice targeted "today" at write time, so it can only be scored
+    once today's activities actually exist — done here, one cron run later, rather
+    than at dashboard-read time, so the algorithm lives in one place and the result
+    is persisted (no recomputation drift)."""
+    yesterday = NOW_LOCAL.date() - timedelta(days=1)
+    for entry in entries:
+        if entry.get("weekly") or "adherence" in entry:
+            continue
+        if entry.get("date") != yesterday.isoformat():
+            continue
+        actual = [a for a in _activities_since(local_midnight_utc(1)) if a.get("date") == yesterday.isoformat()]
+        entry["adherence"] = _compute_adherence(entry, actual)
+    return entries
 
 
 def read_coach_log() -> list[dict]:
@@ -426,7 +489,7 @@ def read_coach_log() -> list[dict]:
 
 
 def write_coach_log(advice: dict, weekly: bool):
-    entries = read_coach_log()
+    entries = _backfill_adherence(read_coach_log())
     entries.append(
         {
             "date": NOW_LOCAL.date().isoformat(),
@@ -442,6 +505,8 @@ JSON_SCHEMA_DAILY = """{
   "status": "<1 sentence: sleep/resting HR/body battery/training readiness score>",
   "run_tip": "<1-2 sentences: concrete workout type (endurance/tempo/interval/recovery), duration, and intensity target (HR range or pace) — not just a HR zone>",
   "bike_tip": "<1-2 sentences: concrete workout type (endurance/tempo/interval/recovery), duration, and intensity target (HR range) — not just a HR zone>",
+  "run_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no run session advised today>",
+  "bike_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no bike session advised today>",
   "color": "green or yellow"
 }"""
 
@@ -532,6 +597,16 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
     already done (type/duration/distance).
   For the sport not done at all today: give normal advice. If the list is empty: give a
   suggestion for both sports.
+- run_target / bike_target: structured version of your run_tip/bike_tip advice, used to
+  later check whether the plan was actually followed. Set to null if you are not advising
+  a session for that sport today (e.g. rest day, or already covered under
+  activities_already_done_today). Otherwise: {"duration_min": <int>, "hr_min": <int>,
+  "hr_max": <int>} — duration_min is your intended session length in minutes, hr_min/hr_max
+  is the target average-heart-rate range for that session (not a hard ceiling — an average
+  across the whole session). These must be concrete numbers consistent with what you just
+  wrote in run_tip/bike_tip, not a separate or vaguer suggestion — e.g. if run_tip says
+  "40 minute easy run, HR 130-150", run_target must be
+  {"duration_min": 40, "hr_min": 130, "hr_max": 150}.
 - recent_activities_14d: full activity history of the last 14 days (date, type, duration,
   avg HR), NOT necessarily one entry per day — there can be, and often are, rest days with no
   entry at all in between. Use this to vary the workout type sensibly instead of suggesting the
