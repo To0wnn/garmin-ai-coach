@@ -13,6 +13,12 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 INFLUXDB_URL = os.environ["INFLUXDB_URL"]  # e.g. http://172.17.0.1:8187
+# DailyStats/SleepSummary carry a per-device tag (watch, HRM strap, bike computer,
+# speed sensor) — several fields (totalSteps, stressPercentage) are only meaningful
+# from the watch itself and silently wrong from other devices (e.g. a chest strap
+# reporting 227 steps vs. the watch's 1790 for the same day). Filtering on this
+# pins those queries to the one full/reliable source.
+WATCH_DEVICE = os.environ.get("WATCH_DEVICE", "fenix 8 - 47mm, AMOLED")
 INFLUXDB_DB = os.environ.get("INFLUXDB_DB", "GarminStats")
 DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 LANGUAGE = os.environ.get("LANGUAGE", "English")  # e.g. English, Nederlands, Deutsch
@@ -21,6 +27,9 @@ NOW_LOCAL = datetime.now(LOCAL_TZ)
 IS_WEEKLY = NOW_LOCAL.weekday() == 6  # Sunday, in lokale tijd
 STALE_AFTER_HOURS = 36
 OUTPUT_FILE = "/app/output/advies.json"
+# Persisted on the coach-home volume so it survives container restarts/rebuilds.
+LOG_FILE = os.path.expanduser("~/coach_log.json")
+LOG_HISTORY_DAYS = 14
 
 
 def local_midnight_utc(days_ago: int = 0) -> datetime:
@@ -67,9 +76,26 @@ def daily_stats_window(days_back: int, window_days: int) -> list[dict]:
     start = local_midnight_utc(days_back + window_days)
     q = (
         f'SELECT restingHeartRate, totalSteps, stressPercentage, '
-        f'bodyBatteryHighestValue, bodyBatteryLowestValue, sleepingSeconds '
+        f'bodyBatteryHighestValue, bodyBatteryLowestValue '
         f'FROM "DailyStats" WHERE time >= \'{start.isoformat()}\' AND time < \'{end.isoformat()}\' '
-        f'ORDER BY time DESC'
+        f'AND "Device" = \'{WATCH_DEVICE}\' ORDER BY time DESC'
+    )
+    return influx_query(q)
+
+
+def sleep_summary_window(days_back: int, window_days: int) -> list[dict]:
+    """DailyStats.sleepingSeconds turned out to be unreliable (seen 5.7h on a
+    night the Garmin app reported 7.5h/score 85) — SleepSummary.sleepTimeSeconds
+    matches the app and comes with sleepScore, so use that instead. Its
+    timestamp lands in the morning after the tracked night (once the watch
+    finishes processing), not at local midnight, but still within the same
+    local calendar day's window."""
+    end = local_midnight_utc(days_back)
+    start = local_midnight_utc(days_back + window_days)
+    q = (
+        f'SELECT sleepTimeSeconds, sleepScore '
+        f'FROM "SleepSummary" WHERE time >= \'{start.isoformat()}\' AND time < \'{end.isoformat()}\' '
+        f'AND "Device" = \'{WATCH_DEVICE}\' ORDER BY time DESC'
     )
     return influx_query(q)
 
@@ -80,12 +106,15 @@ def build_metrics() -> dict:
     prev_7d = daily_stats_window(7, 7)
     last_28d = daily_stats_window(0, 28)
 
-    today_sleep_h = round(today[0]["sleepingSeconds"] / 3600, 1) if today and today[0].get("sleepingSeconds") else None
+    today_sleep = sleep_summary_window(0, 1)
+    today_sleep_h = round(today_sleep[0]["sleepTimeSeconds"] / 3600, 1) if today_sleep and today_sleep[0].get("sleepTimeSeconds") else None
+    today_sleep_score = today_sleep[0].get("sleepScore") if today_sleep else None
     # sleep_vs_7d_avg compares against the 6 days BEFORE today, not including today
     # itself — otherwise the deviation gets structurally dampened by including
     # today in its own baseline average.
-    prior_6d = daily_stats_window(1, 6)
-    prior_6d_sleep_avg = avg(prior_6d, "sleepingSeconds")
+    prior_6d_sleep = sleep_summary_window(1, 6)
+    prior_6d_sleep_avg = avg(prior_6d_sleep, "sleepTimeSeconds")
+    last_7d_sleep = sleep_summary_window(0, 7)
 
     return {
         "today": {
@@ -94,6 +123,7 @@ def build_metrics() -> dict:
             "body_battery_high": today[0].get("bodyBatteryHighestValue") if today else None,
             "body_battery_low": today[0].get("bodyBatteryLowestValue") if today else None,
             "sleep_hours": today_sleep_h,
+            "sleep_score": today_sleep_score,
             "sleep_vs_prior_6d_avg_hours": round(today_sleep_h - prior_6d_sleep_avg / 3600, 1)
             if today_sleep_h is not None and prior_6d_sleep_avg
             else None,
@@ -103,8 +133,8 @@ def build_metrics() -> dict:
             "resting_hr": avg(last_7d, "restingHeartRate"),
             "steps": avg(last_7d, "totalSteps"),
             "stress_pct": avg(last_7d, "stressPercentage"),
-            "sleep_hours": round(avg(last_7d, "sleepingSeconds") / 3600, 1)
-            if avg(last_7d, "sleepingSeconds")
+            "sleep_hours": round(avg(last_7d_sleep, "sleepTimeSeconds") / 3600, 1)
+            if avg(last_7d_sleep, "sleepTimeSeconds")
             else None,
             "days_with_data": len(last_7d),
         },
@@ -122,14 +152,18 @@ def build_metrics() -> dict:
         "lactate_threshold_running": _lactate_threshold(),
         "cycling_hr_zones": _cycling_hr_zones(today, last_28d),
         "baseline_deviation": _baseline_deviation(),
+        "recent_activities_14d": _activities_since(local_midnight_utc(LOG_HISTORY_DAYS - 1)),
     }
 
 
 def _activities_today() -> list[dict]:
-    start = local_midnight_utc(0)
+    return _activities_since(local_midnight_utc(0))
+
+
+def _activities_since(start: datetime) -> list[dict]:
     rows = influx_query(
         f'SELECT activityType, activityName, distance, elapsedDuration, averageHR, calories '
-        f'FROM "ActivitySummary" WHERE time >= \'{start.isoformat()}\''
+        f'FROM "ActivitySummary" WHERE time >= \'{start.isoformat()}\' ORDER BY time DESC'
     )
     result = []
     seen = set()
@@ -137,12 +171,13 @@ def _activities_today() -> list[dict]:
         activity_type = r.get("activityType")
         if not activity_type or activity_type == "No Activity":
             continue
-        key = (activity_type, r.get("activityName"), r.get("distance"))
+        key = (r.get("time"), activity_type, r.get("activityName"), r.get("distance"))
         if key in seen:  # garmin-fetch-data can write an activity twice on re-sync
             continue
         seen.add(key)
         result.append(
             {
+                "date": r["time"][:10],
                 "type": activity_type,
                 "name": r.get("activityName"),
                 "distance_km": round(r["distance"] / 1000, 1) if r.get("distance") else None,
@@ -273,25 +308,52 @@ def _cycling_hr_zones(today: list[dict], last_28d: list[dict]) -> dict:
     }
 
 
+def read_coach_log() -> list[dict]:
+    """Own log of past advice, kept on the persisted coach-home volume — the
+    Claude session itself is reset (`/clear`) after every run, so without this
+    each day starts from zero with no memory of what was advised or how the
+    user's ACWR/readiness trended over the past runs."""
+    if not os.path.exists(LOG_FILE):
+        return []
+    with open(LOG_FILE) as f:
+        entries = json.load(f)
+    cutoff = (NOW_LOCAL - timedelta(days=LOG_HISTORY_DAYS)).date().isoformat()
+    return [e for e in entries if e.get("date", "") >= cutoff]
+
+
+def write_coach_log(advice: dict, weekly: bool):
+    entries = read_coach_log()
+    entries.append(
+        {
+            "date": NOW_LOCAL.date().isoformat(),
+            "weekly": weekly,
+            "advice": advice,
+        }
+    )
+    with open(LOG_FILE, "w") as f:
+        json.dump(entries, f, ensure_ascii=False)
+
+
 JSON_SCHEMA_DAILY = """{
   "status": "<1 sentence: sleep/resting HR/body battery/training readiness score>",
-  "run_tip": "<1-2 sentences running advice>",
-  "bike_tip": "<1-2 sentences cycling advice>",
+  "run_tip": "<1-2 sentences: concrete workout type (endurance/tempo/interval/recovery), duration, and intensity target (HR range or pace) — not just a HR zone>",
+  "bike_tip": "<1-2 sentences: concrete workout type (endurance/tempo/interval/recovery), duration, and intensity target (HR range) — not just a HR zone>",
   "color": "green or yellow"
 }"""
 
 JSON_SCHEMA_WEEKLY = """{
-  "performance": "<2-3 sentences overall weekly assessment>",
+  "performance": "<2-3 sentences overall weekly assessment, referencing the trend across recent_activities_14d and coach_log>",
   "recovery": "<2-3 sentences, explicitly mention the ACWR ratio>",
-  "run_advice": "<2-3 sentences running advice for the coming week>",
-  "bike_advice": "<2-3 sentences cycling advice for the coming week>",
+  "run_advice": "<2-3 sentences: concrete plan for the coming week (e.g. which days for intervals/tempo/long run vs. recovery), not just a single tip>",
+  "bike_advice": "<2-3 sentences: concrete plan for the coming week (e.g. which days for intervals/tempo/long ride vs. recovery), not just a single tip>",
   "watch_point": "<1-2 sentences, or 'Nothing notable'>",
   "color": "green, orange or red"
 }"""
 
 
-def build_prompt(metrics: dict, weekly: bool) -> str:
+def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
     m = json.dumps(metrics, indent=2, ensure_ascii=False)
+    log = json.dumps(coach_log, indent=2, ensure_ascii=False) if coach_log else "[]"
     disclaimer = (
         "No medical claims or diagnoses. For persistent issues, refer to a doctor "
         "or physiotherapist — avoid overly confident statements."
@@ -312,9 +374,10 @@ def build_prompt(metrics: dict, weekly: bool) -> str:
   this account) — these are generic, calculated heart rate zones (Karvonen formula based on
   resting HR and measured max HR during cycling activities), less precise than the running
   threshold. Mention this when giving cycling advice.
-- today.sleep_hours and today.sleep_vs_prior_6d_avg_hours (difference vs. the average of the
-  preceding 6 days, so not counting today itself): sleep is a FULL decision factor alongside
-  readiness/ACWR, not just a status figure. A clear deficit (e.g. -1.5h or more) should
+- today.sleep_hours, today.sleep_score (Garmin's own 0-100 sleep quality score) and
+  today.sleep_vs_prior_6d_avg_hours (difference vs. the average of the preceding 6 days, so
+  not counting today itself): sleep is a FULL decision factor alongside readiness/ACWR, not
+  just a status figure. A clear deficit (e.g. -1.5h or more) or a low sleep_score should
   noticeably temper the intensity/duration of the advice, even if body battery/readiness look
   fine on their own — a high body battery after little sleep mostly reflects current energy,
   not full physical recovery.
@@ -333,6 +396,17 @@ def build_prompt(metrics: dict, weekly: bool) -> str:
     already done (type/duration/distance).
   For the sport not done at all today: give normal advice. If the list is empty: give a
   suggestion for both sports.
+- recent_activities_14d: full activity history of the last 14 days (date, type, duration,
+  avg HR). Use this to vary the workout type sensibly instead of suggesting the same generic
+  endurance session every day — e.g. if there's been no intensity in several days and
+  readiness/ACWR allow it, a tempo or interval session is appropriate; if there have already
+  been 2+ hard sessions this week, favor endurance/recovery instead. Reference concrete
+  sessions from this list when relevant (e.g. "after yesterday's 12km tempo run...").
+- coach_log: your own last 14 days of advice (JSON, oldest first). Use this to
+  stay consistent (don't contradict yesterday's plan without reason) and to build an actual
+  short-term plan across days (e.g. if you suggested an easy day yesterday, today can pick up
+  intensity again, referencing that). If empty, this is one of the first runs — say so is not
+  necessary, just give standalone advice.
 - baseline_deviation.hrv_deviation_sd / resting_hr_deviation_sd: today's HRV/resting HR
   expressed as standard deviations from your 28-day rolling baseline. Roughly: within ±1 SD
   is normal day-to-day variation, beyond ±1 SD is a notable deviation worth mentioning,
@@ -355,8 +429,10 @@ def build_prompt(metrics: dict, weekly: bool) -> str:
         '"Daily Suggested Workouts" feature but with more context and explanation.'
         if weekly
         else 'You are a fitness coach who, like Garmin\'s "Daily Suggested Workouts", gives '
-        'concrete, actionable training advice for TODAY — not just "take it easy" but a '
-        'specific workout suggestion with type, duration, and intensity target.'
+        'concrete, actionable training advice for TODAY — not just "take it easy" or a bare '
+        'HR range, but a specific workout type (endurance run, tempo, intervals, recovery, '
+        'rest), with duration and intensity target, chosen based on recent training history '
+        'and what was advised previously — not a generic template repeated every day.'
     )
     comparison_note = (
         "\n`last_7d_avg` = this week, `prev_7d_avg` = last week, `last_28d_avg` = 4-week "
@@ -375,6 +451,10 @@ Use this Garmin data (already pre-computed — no raw time series, don't use any
 than what's given below):
 
 {m}
+
+Your own advice from the last {LOG_HISTORY_DAYS} days (coach_log, oldest first):
+
+{log}
 
 {context}
 {comparison_note}
@@ -505,10 +585,12 @@ def wait_for_fresh_sync():
 def main():
     wait_for_fresh_sync()
     metrics = build_metrics()
-    prompt = build_prompt(metrics, IS_WEEKLY)
+    coach_log = read_coach_log()
+    prompt = build_prompt(metrics, IS_WEEKLY, coach_log)
     advice = call_claude(prompt)
     embed = build_embed(advice, IS_WEEKLY)
     post_discord(embed)
+    write_coach_log(advice, IS_WEEKLY)
     print(f"Done ({'weekly' if IS_WEEKLY else 'daily'}):", json.dumps(advice, ensure_ascii=False))
 
 

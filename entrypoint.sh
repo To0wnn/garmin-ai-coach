@@ -64,6 +64,5 @@ chmod 600 /app/.env.runtime
 # itself uses gosu to reach the tmux session as 'coach'.
 echo "0 6 * * * root /app/cron_daily.sh >> /var/log/coach-cron.log 2>&1" > /etc/cron.d/coach
 chmod 0644 /etc/cron.d/coach
-crontab /etc/cron.d/coach
 touch /var/log/coach-cron.log
 cron -f
