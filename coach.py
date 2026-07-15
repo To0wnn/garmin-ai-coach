@@ -639,7 +639,8 @@ JSON_SCHEMA_DAILY = """{
   "bike_tip": "<follows TIP STRUCTURE above>",
   "run_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no run session advised today>",
   "bike_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no bike session advised today>",
-  "tomorrow_preview": "<1 sentence: a tentative outlook for tomorrow given how today is expected to go (e.g. 'Tomorrow, if today's endurance ride goes as planned, there's room for a harder run.'). A rough direction only, not a full plan — tomorrow's actual run will use fresh data.>",
+  "tomorrow_run": "<1 tentative one-liner: workout type + duration + HR range for tomorrow's run, e.g. 'Likely an easy run, ~35 min, HR 130-148' — or 'Likely a rest day' if no run is probable. Null if genuinely too uncertain to say anything.>",
+  "tomorrow_bike": "<1 tentative one-liner: workout type + duration + power range (from cycling_power_zones if available, otherwise HR range) for tomorrow's ride, e.g. 'Likely a tempo ride, ~45 min, 175-210W' — or 'Likely a rest day' if no ride is probable. Null if genuinely too uncertain to say anything.>",
   "color": "green or yellow"
 }"""
 
@@ -772,13 +773,19 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
   short-term plan across days (e.g. if you suggested an easy day yesterday, today can pick up
   intensity again, referencing that). If empty, this is one of the first runs — say so is not
   necessary, just give standalone advice.
-- tomorrow_preview (daily only): a brief, tentative outlook for tomorrow, reasoning forward
-  from today's plan and recent load — e.g. if today is an easy/recovery day, tomorrow likely has
-  room for intensity; if today includes a hard session, tomorrow is probably easier. Keep this
-  genuinely tentative (say "likely"/"if today goes as planned", not a firm commitment) since
-  tomorrow's actual advice will be generated fresh with tomorrow's real data (sleep, HRV,
-  whether today's plan was actually followed) — this is a same-day heads-up, not a forecast to
-  be held to. One sentence, no numeric targets (that's what tomorrow's real run_target is for).
+- tomorrow_run / tomorrow_bike (daily only): brief, tentative one-liners for tomorrow, one per
+  sport, reasoning forward from today's plan and recent load — e.g. if today is an easy/recovery
+  day for a sport, tomorrow likely has room for intensity in that sport; if today includes a
+  hard session, tomorrow is probably easier or a rest day for that sport. Each one-liner must
+  name a workout type (easy/tempo/interval/rest) AND include a concrete duration + intensity
+  range so the user can mentally prepare (e.g. "Likely an easy run, ~35 min, HR 130-148" or, for
+  cycling, prefer watts over HR when cycling_power_zones is available: "Likely a tempo ride,
+  ~45 min, 175-210W"). Keep the WORDING tentative ("likely", not a firm commitment) even though
+  the numbers are concrete — tomorrow's actual advice will be generated fresh with tomorrow's
+  real data (sleep, HRV, whether today's plan was actually followed), so this is same-day
+  mental preparation, not a promise to be held to. If a rest day is likely for a sport, say so
+  plainly (e.g. "Likely a rest day") rather than inventing a session. Set to null only if
+  genuinely too uncertain to say anything useful (e.g. very early in the coach_log history).
 - baseline_deviation.hrv_deviation_sd / resting_hr_deviation_sd: today's HRV/resting HR
   expressed as standard deviations from your 28-day rolling baseline. Roughly: within ±1 SD
   is normal day-to-day variation, beyond ±1 SD is a notable deviation worth mentioning,
@@ -934,8 +941,13 @@ def build_embed(advice: dict, weekly: bool) -> dict:
         {"name": "🏃 Running", "value": _field(advice.get("run_tip")), "inline": False},
         {"name": "🚴 Cycling", "value": _field(advice.get("bike_tip")), "inline": False},
     ]
-    if advice.get("tomorrow_preview"):
-        fields.append({"name": "🔭 Tomorrow", "value": _field(advice.get("tomorrow_preview")), "inline": False})
+    if advice.get("tomorrow_run") or advice.get("tomorrow_bike"):
+        preview_lines = []
+        if advice.get("tomorrow_run"):
+            preview_lines.append(f"🏃 {advice['tomorrow_run']}")
+        if advice.get("tomorrow_bike"):
+            preview_lines.append(f"🚴 {advice['tomorrow_bike']}")
+        fields.append({"name": "🔭 Tomorrow (preview)", "value": _field("\n".join(preview_lines)), "inline": False})
     return {
         "title": f"📅 Today — {today_str}",
         "color": color,
