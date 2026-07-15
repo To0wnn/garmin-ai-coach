@@ -402,6 +402,15 @@ def _training_readiness() -> dict:
         "acute_load": r.get("acuteLoad"),
         "recovery_time_hours": round(r["recoveryTime"] / 60, 1) if r.get("recoveryTime") else None,
         "sleep_score": r.get("sleepScore"),
+        # Garmin's own per-factor breakdown of the score (0-100 each, higher = more
+        # favorable) — partially de-black-boxes the composite score, and is the key
+        # to diagnosing a disagreement with baseline_deviation (does a low readiness
+        # trace back to HRV specifically, or to sleep/stress/load instead?).
+        "factor_hrv": r.get("hrvFactorPercent"),
+        "factor_sleep": r.get("sleepScoreFactorPercent"),
+        "factor_recovery_time": r.get("recoveryTimeFactorPercent"),
+        "factor_acwr": r.get("acwrFactorPercent"),
+        "factor_stress_history": r.get("stressHistoryFactorPercent"),
         "data_stale": r.get("_stale", False),
     }
 
@@ -644,7 +653,12 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
     context = """Field explanations:
 - training_readiness.score (0-100) and .level: Garmin's own readiness score for today.
   If "available": false or "data_stale": true is set: this data is missing or stale
-  (more than 36 hours old) — don't rely on it, fall back on sleep/resting HR/ACWR.
+  (more than 36 hours old) — don't rely on it; fall back on baseline_deviation, sleep and ACWR.
+  training_readiness.factor_hrv / factor_sleep / factor_recovery_time / factor_acwr /
+  factor_stress_history (0-100 each, higher = more favorable) are Garmin's own breakdown of
+  what's driving the score — use them to explain WHY readiness is high or low, and to check
+  whether a disagreement with baseline_deviation traces back to HRV itself or to a non-HRV
+  factor (sleep, stress history, recovery time).
 - training_status.acute_chronic_load_ratio (ACWR): <0.8 = too little load (undertrained),
   0.8-1.3 = healthy zone, 1.3-1.5 = caution (ramping up), >1.5 = ramping up fast — treat
   these as a load-ramp guardrail (how fast load is rising vs. your recent average), not as
@@ -752,9 +766,21 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
   expressed as standard deviations from your 28-day rolling baseline. Roughly: within ±1 SD
   is normal day-to-day variation, beyond ±1 SD is a notable deviation worth mentioning,
   beyond ±2 SD is a strong signal (HRV notably below baseline or RHR notably above baseline
-  both suggest incomplete recovery — treat this as at least as important as Garmin's own
-  training_readiness score, since it's a more transparent, directly-computed signal). If
-  "available": false, this data isn't available yet (needs at least 7 days of history)."""
+  both suggest incomplete recovery). IMPORTANT — relationship to training_readiness: HRV also
+  feeds into Garmin's readiness score above, so these are two partially overlapping views of
+  the same underlying recovery state, NOT two independent signals. Never cite them as separate
+  pieces of evidence for the same conclusion — when they agree, lead with the explicit SD
+  number as your cited evidence and mention the readiness score at most once as confirmation,
+  without escalating the severity because "both" say so. When they clearly disagree (e.g.
+  readiness MODERATE or better while hrv_deviation_sd is at or below -2 or
+  resting_hr_deviation_sd at or above +2 — or readiness LOW while both deviations are within
+  ±1 SD), do both of the following: (1) let the MORE CAUTIOUS of the two cap today's
+  intensity — never use the more optimistic signal to argue a warning away; (2) name the
+  disagreement explicitly in the tip so the user can see the signals diverged. One nuance: a
+  single night's HRV is noisier than Garmin's multi-night smoothing, so a lone deviation
+  between 1 and 2 SD against an otherwise good readiness score justifies caution in intensity,
+  not automatically a full rest day. If "available": false, this data isn't available yet
+  (needs at least 7 days of history)."""
 
     recovery_note = (
         "If running/cycling is discouraged today (low readiness, high ACWR, or training_status "
