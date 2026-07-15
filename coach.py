@@ -20,12 +20,12 @@ _SETTINGS = _settings.read_settings()
 
 INFLUXDB_URL = os.environ["INFLUXDB_URL"]  # e.g. http://172.17.0.1:8187
 INFLUXDB_DB = os.environ.get("INFLUXDB_DB", "GarminStats")
-DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
 # Dashboard-editable (settings.py / ~/coach_settings.json) — not read from .env
-# directly anymore, so a provider/language/watch-device change on the settings
-# page takes effect on the next run without a container restart.
+# directly anymore, so a provider/language/watch-device/webhook change on the
+# settings page takes effect on the next run without a container restart.
 PROVIDER = _SETTINGS["provider"]
 LANGUAGE = _SETTINGS["language"]  # e.g. English, Nederlands, Deutsch
+DISCORD_WEBHOOK_URL = _SETTINGS["discord_webhook_url"]
 # DailyStats/SleepSummary carry a per-device tag (watch, HRM strap, bike computer,
 # speed sensor) — several fields (totalSteps, stressPercentage) are only meaningful
 # from the watch itself and silently wrong from other devices (e.g. a chest strap
@@ -886,6 +886,8 @@ def _field(value: str | None) -> str:
 
 
 def post_discord(embed: dict):
+    if not DISCORD_WEBHOOK_URL:
+        raise RuntimeError("No Discord webhook URL configured — set one on the dashboard's Settings page.")
     body = json.dumps({"embeds": [embed]}).encode()
     req = urllib.request.Request(
         DISCORD_WEBHOOK_URL,
