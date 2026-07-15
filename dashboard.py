@@ -6,6 +6,7 @@ existing InfluxDB query functions and coach_log — no separate query layer."""
 
 import json
 import os
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import coach
@@ -16,10 +17,13 @@ HTML_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.
 
 def build_payload() -> dict:
     history = coach.read_coach_log()
+    metrics = coach.build_metrics()
+    metrics["vo2max_series"] = coach.vo2max_series(28)
     return {
         "latest": history[-1] if history else None,
         "history": history,
-        "metrics": coach.build_metrics(),
+        "metrics": metrics,
+        "generated_at": datetime.now(coach.LOCAL_TZ).isoformat(),
     }
 
 

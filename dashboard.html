@@ -2,255 +2,717 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Garmin AI Coach</title>
 <style>
-  :root { color-scheme: dark; }
+  :root {
+    color-scheme: dark;
+    --bg:        #0f1014;
+    --surface:   #16171c;
+    --surface-2: #1d1e24;
+    --border:    #262830;
+    --grid:      #23242a;
+    --ink:       #f2f3f5;
+    --ink-2:     #a0a3ad;
+    --ink-3:     #6b6e78;
+    --good:      #2fbf4f;
+    --warn:      #eab308;
+    --serious:   #f0824f;
+    --crit:      #e5484d;
+    --run:       #3987e5;
+    --bike:      #199e70;
+    --sp: 8px;
+    --radius: 12px;
+    --radius-s: 8px;
+  }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 24px; background: #14151a; color: #e6e6e6;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    max-width: 1000px; margin-inline: auto;
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 400 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
-  h1 { font-size: 1.4rem; margin-bottom: 4px; }
-  .sub { color: #9a9ba3; font-size: 0.9rem; margin-bottom: 24px; }
+  .wrap { max-width: 1080px; margin-inline: auto; padding: 32px 24px 48px; }
+
+  .label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--ink-3);
+  }
+
+  /* header */
+  header.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  header.top h1 { font-size: 20px; font-weight: 650; margin: 0; display: flex; align-items: center; gap: 10px; }
+  header.top h1 .ic { width: 22px; height: 22px; color: var(--run); }
+  #updated { font-size: 12px; color: var(--ink-3); }
+
+  /* icons */
+  .ic { width: 16px; height: 16px; vertical-align: -3px; stroke: currentColor; fill: none;
+        stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* layout */
   .card {
-    background: #1c1e26; border: 1px solid #2b2d38; border-radius: 10px;
-    padding: 16px 20px; margin-bottom: 16px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 24px; margin-bottom: 16px;
   }
-  .card h2 { font-size: 1rem; margin: 0 0 12px; color: #c7c9d4; }
-  .badge {
-    display: inline-block; padding: 2px 10px; border-radius: 999px;
-    font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
+  .card h2 { font-size: 15px; font-weight: 600; margin: 0 0 16px; color: var(--ink); }
+  .card h2 small { font-weight: 400; font-size: 12px; color: var(--ink-3); margin-left: 8px; }
+  .grid { display: grid; gap: 16px; margin-bottom: 16px; }
+  .grid2 { grid-template-columns: 1fr 1fr; }
+  .tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+
+  /* stat tiles */
+  .tile { background: var(--surface); border: 1px solid var(--border);
+          border-radius: var(--radius); padding: 14px 16px; }
+  .tile .label { margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+  .tile .ic { width: 13px; height: 13px; color: var(--ink-3); }
+  .tile .value { font-size: 24px; font-weight: 650; line-height: 1.2; }
+  .tile .value small { font-size: 13px; font-weight: 400; color: var(--ink-2); margin-left: 2px; }
+  .tile .delta { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+  .tile .delta.good { color: var(--good); }
+
+  /* hero advice */
+  .hero { border-left: 4px solid var(--good); padding: 24px 28px; }
+  .hero .kicker-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    color: var(--ink); background: color-mix(in srgb, var(--c) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--c) 30%, transparent);
   }
-  .badge-green { background: #1e4028; color: #4ade80; }
-  .badge-yellow { background: #40391e; color: #facc15; }
-  .badge-orange { background: #402e1e; color: #fb923c; }
-  .badge-red { background: #401e1e; color: #f87171; }
-  .badge-gray { background: #2b2d38; color: #9a9ba3; }
-  .field { margin-bottom: 10px; }
-  .field-label { font-size: 0.8rem; color: #9a9ba3; margin-bottom: 2px; }
-  .field-value { line-height: 1.5; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  canvas { max-width: 100%; }
-  .timeline { display: flex; gap: 4px; flex-wrap: wrap; }
-  .day-box {
-    width: 22px; height: 22px; border-radius: 4px; cursor: default;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 0.6rem; color: #14151a; font-weight: 700;
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--c); flex: none; }
+  .chip.neutral { background: var(--surface-2); border-color: var(--border); }
+  .chip.neutral::before { display: none; }
+  .hero-copy { font-size: 16px; line-height: 1.6; color: var(--ink); max-width: 70ch; margin-bottom: 18px; }
+  .sport-row .label { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .sport-row .label .ic.run { color: var(--run); }
+  .sport-row .label .ic.bike { color: var(--bike); }
+  .sport-tip { font-size: 14px; color: var(--ink-2); line-height: 1.5; }
+  .target-pill {
+    display: inline-block; margin-top: 8px; font-size: 12px; font-variant-numeric: tabular-nums;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 10px; color: var(--ink-2);
   }
-  .day-box[data-color="green"] { background: #4ade80; }
-  .day-box[data-color="yellow"] { background: #facc15; }
-  .day-box[data-color="red"] { background: #f87171; }
-  .day-box[data-color="gray"] { background: #3a3c48; color: #9a9ba3; }
-  .day-box[data-color="pending"] {
-    background: repeating-linear-gradient(45deg, #2b2d38, #2b2d38 3px, #22232c 3px, #22232c 6px);
+  .watch-point {
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--ink-2);
   }
-  .legend { display: flex; gap: 14px; font-size: 0.8rem; color: #9a9ba3; margin-top: 8px; flex-wrap: wrap; }
-  .legend span { display: inline-flex; align-items: center; gap: 5px; }
-  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #2b2d38; }
-  th { color: #9a9ba3; font-weight: 500; }
-  .empty { color: #9a9ba3; font-style: italic; }
-  .history-entry { border-bottom: 1px solid #2b2d38; padding: 10px 0; }
-  .history-entry:last-child { border-bottom: none; }
-  .history-date { font-size: 0.8rem; color: #9a9ba3; margin-bottom: 4px; }
+  .watch-point .ic { color: var(--warn); flex: none; margin-top: 2px; }
+
+  /* charts */
+  .chart-wrap { position: relative; }
+  canvas.chart { width: 100%; height: 190px; display: block; }
+  .chart-empty {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 13px; color: var(--ink-3); text-align: center; padding: 0 20px;
+  }
+  .legend { display: flex; gap: 16px; margin-bottom: 10px; font-size: 12px; color: var(--ink-2); }
+  .legend .key { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .swatch { width: 14px; height: 2px; border-radius: 1px; }
+
+  /* intensity meters */
+  .meter-row { margin-bottom: 14px; }
+  .meter-row:last-child { margin-bottom: 0; }
+  .meter-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+  .meter-head .pct { font-size: 13px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .meter { height: 12px; border-radius: 6px; background: var(--surface-2); overflow: hidden; }
+  .meter > i { display: block; height: 100%; border-radius: 0 6px 6px 0; background: var(--z); }
+  .meter-foot { font-size: 12px; color: var(--ink-3); margin-top: 12px; }
+
+  /* adherence timeline */
+  .timeline { display: flex; gap: 6px; }
+  .tl-rows { display: flex; flex-direction: column; justify-content: center; gap: 2px; margin-right: 4px; }
+  .tl-rows .ic { width: 14px; height: 14px; color: var(--ink-3); }
+  .day { display: flex; flex-direction: column; gap: 2px; flex: 1; max-width: 44px; border-radius: 4px; outline-offset: 2px; }
+  .day.today { outline: 1px solid var(--ink-3); }
+  .day .dow { font-size: 10px; color: var(--ink-3); text-align: center; text-transform: uppercase; }
+  .day .dom { font-size: 10px; color: var(--ink-3); text-align: center; font-variant-numeric: tabular-nums; }
+  .day .seg { height: 12px; border-radius: 3px; background: var(--c); display: block; }
+  .day .seg.rest { background: var(--surface-2); }
+  .day .seg.pending { background: repeating-linear-gradient(45deg, var(--surface-2) 0 3px, var(--border) 3px 6px); }
+  .day:hover .seg, .day:focus .seg { filter: brightness(1.2); }
+  .day:focus { outline: 1px solid var(--ink-2); }
+
+  .tooltip {
+    position: fixed; z-index: 20; pointer-events: none; visibility: hidden;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-s); padding: 8px 10px; font-size: 12px;
+    box-shadow: 0 4px 16px rgba(0,0,0,.4); max-width: 260px;
+  }
+  .tooltip .tt-title { font-weight: 600; margin-bottom: 4px; color: var(--ink); }
+  .tooltip .tt-row { display: flex; gap: 6px; color: var(--ink-2); margin-top: 2px; }
+  .tooltip .tt-row .tt-sport { flex: none; width: 34px; color: var(--ink-3); font-weight: 600; }
+
+  /* table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); padding: 6px 12px; }
+  th.num, td.num { text-align: right; }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--border); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+  td.type-cell { font-variant-numeric: normal; color: var(--ink); }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--surface-2); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; }
+
+  /* history */
+  .history-list { position: relative; }
+  .h-entry { position: relative; padding: 10px 0 10px 20px; border-bottom: 1px solid var(--border); }
+  .h-entry:last-child { border-bottom: none; }
+  .h-entry::before {
+    content: ""; position: absolute; left: 0; top: 16px; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--c);
+  }
+  .h-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .h-summary {
+    font-size: 13px; color: var(--ink-2); margin: 0;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .h-more { font-size: 12px; color: var(--ink-3); padding: 10px 0 0 20px; }
+
+  .empty { color: var(--ink-3); padding: 20px 0; text-align: center; font-size: 13px; }
 </style>
 </head>
 <body>
-  <h1>🏃🚴 Garmin AI Coach</h1>
-  <div class="sub" id="subtitle">Loading…</div>
+  <svg style="display:none" aria-hidden="true">
+    <symbol id="i-activity" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
+    <symbol id="i-bike" viewBox="0 0 24 24"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2 1 1 0 000 2zm-3 11.5V14l-3-3 4-3 2 3h2"/></symbol>
+    <symbol id="i-run" viewBox="0 0 24 24"><path d="M13 4a1 1 0 100-2 1 1 0 000 2zm4 18l-2-8-4-3 1-6"/><path d="M7 12l2-5 5 1 3 3 3 1"/><path d="M7 22l3-5"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 00-7.8 7.8l1 1.1L12 21.2l7.8-7.7 1-1.1a5.5 5.5 0 000-7.8z"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3 7 7 0 0021 12.8z"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
+    <symbol id="i-trend" viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
+    <symbol id="i-battery" viewBox="0 0 24 24"><rect x="1" y="7" width="18" height="10" rx="2"/><line x1="23" y1="11" x2="23" y2="13"/></symbol>
+    <symbol id="i-steps" viewBox="0 0 24 24"><path d="M6 3a2 2 0 100 4 2 2 0 000-4zm0 8v10M18 13a2 2 0 100 4 2 2 0 000-4zm0 4v4"/></symbol>
+  </svg>
 
-  <div class="card" id="latest-card">
-    <h2>Latest advice</h2>
-    <div id="latest-body" class="empty">Loading…</div>
-  </div>
+  <div class="wrap">
+    <header class="top">
+      <h1><svg class="ic"><use href="#i-activity"/></svg> Garmin AI Coach</h1>
+      <span id="updated"></span>
+    </header>
 
-  <div class="grid2">
+    <div class="grid tiles" id="tiles"></div>
+
+    <div class="card hero" id="hero-card">
+      <div id="hero-body" class="empty">Loading…</div>
+    </div>
+
+    <div class="grid grid2">
+      <div class="card">
+        <h2>Intensity distribution <small>last 7 days</small></h2>
+        <div id="intensity-body"></div>
+      </div>
+      <div class="card">
+        <h2>VO2max <small>last 28 days</small></h2>
+        <div class="legend" id="vo2-legend"></div>
+        <div class="chart-wrap">
+          <canvas class="chart" id="chart-vo2"></canvas>
+          <div class="chart-empty" id="vo2-empty" style="display:none">Not enough data yet — VO2max updates only on days Garmin can compute it.</div>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
-      <h2>Intensity distribution (7d)</h2>
-      <canvas id="chart-intensity" width="440" height="180"></canvas>
+      <h2>Adherence <small id="adherence-sub"></small></h2>
+      <div class="timeline">
+        <div class="tl-rows">
+          <svg class="ic"><use href="#i-run"/></svg>
+          <svg class="ic"><use href="#i-bike"/></svg>
+        </div>
+        <div class="timeline" id="adherence-timeline" style="flex:1"></div>
+      </div>
+      <div class="legend" style="margin-top:14px;margin-bottom:0">
+        <span class="key"><span class="dot" style="background:var(--good)"></span>followed plan</span>
+        <span class="key"><span class="dot" style="background:var(--warn)"></span>deviated</span>
+        <span class="key"><span class="dot" style="background:var(--crit)"></span>missed</span>
+        <span class="key"><span class="dot" style="background:var(--surface-2);border:1px solid var(--border)"></span>rest day</span>
+      </div>
     </div>
+
     <div class="card">
-      <h2>VO2max trend</h2>
-      <canvas id="chart-vo2" width="440" height="180"></canvas>
+      <h2>Recent activities</h2>
+      <div id="activities-body"></div>
+    </div>
+
+    <div class="card">
+      <h2>Advice history</h2>
+      <div id="history-body"></div>
     </div>
   </div>
 
-  <div class="card">
-    <h2>Adherence timeline (last 14 days)</h2>
-    <div class="timeline" id="adherence-timeline"></div>
-    <div class="legend">
-      <span><i style="background:#4ade80"></i> followed plan</span>
-      <span><i style="background:#facc15"></i> deviated</span>
-      <span><i style="background:#f87171"></i> missed</span>
-      <span><i style="background:#3a3c48"></i> rest as advised</span>
-      <span><i style="background:repeating-linear-gradient(45deg,#2b2d38,#2b2d38 2px,#22232c 2px,#22232c 4px)"></i> pending</span>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Recent activities</h2>
-    <div id="activities-body" class="empty">Loading…</div>
-  </div>
-
-  <div class="card">
-    <h2>Advice history</h2>
-    <div id="history-body" class="empty">Loading…</div>
-  </div>
+  <div class="tooltip" id="tooltip"></div>
 
 <script>
-const COLOR_HEX = { green: "#4ade80", yellow: "#facc15", orange: "#fb923c", red: "#f87171", gray: "#3a3c48" };
+const $ = (sel, root=document) => root.querySelector(sel);
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const tooltip = $("#tooltip");
 
-function badge(color) {
-  const c = (color || "gray").toLowerCase();
-  return `<span class="badge badge-${c}">${c}</span>`;
+const STATUS = {
+  green:  { c: "var(--good)",    label: "On track" },
+  yellow: { c: "var(--warn)",    label: "Caution" },
+  orange: { c: "var(--serious)", label: "Ease off" },
+  red:    { c: "var(--crit)",    label: "Rest / recover" },
+  gray:   { c: "var(--ink-3)",   label: "No data" },
+};
+function statusOf(color) { return STATUS[(color || "gray").toLowerCase()] || STATUS.gray; }
+
+function showTooltip(x, y, node) {
+  tooltip.innerHTML = "";
+  tooltip.appendChild(node);
+  tooltip.style.visibility = "visible";
+  const rect = tooltip.getBoundingClientRect();
+  let left = x + 14, top = y + 14;
+  if (left + rect.width > window.innerWidth - 8) left = x - rect.width - 14;
+  if (top + rect.height > window.innerHeight - 8) top = y - rect.height - 14;
+  tooltip.style.left = left + "px";
+  tooltip.style.top = top + "px";
+}
+function hideTooltip() { tooltip.style.visibility = "hidden"; }
+
+function fmtDate(iso, opts) {
+  return new Date(iso + "T00:00:00").toLocaleDateString(undefined, opts || { weekday: "short", day: "numeric", month: "short" });
 }
 
-function field(label, value) {
-  if (!value) return "";
-  return `<div class="field"><div class="field-label">${label}</div><div class="field-value">${value}</div></div>`;
+// ---------- stat tiles ----------
+function tile(iconId, label, value, unit, delta, deltaGood) {
+  const t = el("div", "tile");
+  const l = el("div", "label");
+  l.innerHTML = `<svg class="ic"><use href="#${iconId}"/></svg>`;
+  l.append(label);
+  t.append(l);
+  const v = el("div", "value");
+  v.append(value == null ? "–" : String(value));
+  if (unit) v.append(el("small", null, unit));
+  t.append(v);
+  if (delta != null) {
+    const d = el("div", "delta" + (deltaGood ? " good" : ""), delta);
+    t.append(d);
+  }
+  return t;
 }
 
-function renderLatest(entry) {
-  const el = document.getElementById("latest-body");
+function renderTiles(m) {
+  const c = $("#tiles");
+  c.innerHTML = "";
+  const today = m.today || {};
+  const w7 = m.last_7d_avg || {};
+
+  if (today.resting_hr != null) {
+    const d = w7.resting_hr != null ? (today.resting_hr - w7.resting_hr) : null;
+    c.append(tile("i-heart", "Resting HR", today.resting_hr, "bpm",
+      d != null ? `${d <= 0 ? "▾" : "▴"} ${Math.abs(d).toFixed(1)} vs 7d avg` : null, d != null && d <= 0));
+  }
+  if (today.sleep_hours != null) {
+    const dev = today.sleep_vs_prior_6d_avg_hours;
+    c.append(tile("i-moon", "Sleep", today.sleep_hours, "h",
+      (today.sleep_score != null ? `score ${today.sleep_score}` : "") +
+      (dev != null ? ` · ${dev >= 0 ? "+" : ""}${dev}h vs 6d avg` : ""), dev != null && dev >= 0));
+  }
+  if (today.body_battery_high != null) {
+    c.append(tile("i-battery", "Body battery", today.body_battery_high, null,
+      today.body_battery_low != null ? `low ${today.body_battery_low}` : null, null));
+  }
+  if (today.steps != null) {
+    const d = w7.steps != null ? Math.round(today.steps - w7.steps) : null;
+    c.append(tile("i-steps", "Steps", today.steps.toLocaleString(), null,
+      d != null ? `${d >= 0 ? "+" : ""}${d.toLocaleString()} vs 7d avg` : null, null));
+  }
+  const tr = m.training_readiness;
+  if (tr && tr.score != null) {
+    c.append(tile("i-zap", "Readiness", tr.score, "/100", tr.level || null, null));
+  }
+  const vo2 = m.vo2max;
+  if (vo2 && vo2.available !== false) {
+    const parts = [];
+    if (vo2.running) parts.push(`run ${vo2.running.current}`);
+    if (vo2.cycling) parts.push(`bike ${vo2.cycling.current}`);
+    const deltaParts = [];
+    if (vo2.running && vo2.running.delta_28d != null) deltaParts.push(`run ${vo2.running.delta_28d >= 0 ? "+" : ""}${vo2.running.delta_28d}`);
+    if (vo2.cycling && vo2.cycling.delta_28d != null) deltaParts.push(`bike ${vo2.cycling.delta_28d >= 0 ? "+" : ""}${vo2.cycling.delta_28d}`);
+    c.append(tile("i-trend", "VO2max", parts.join(" · "), null, deltaParts.length ? deltaParts.join(" · ") + " (28d)" : null, null));
+  }
+}
+
+// ---------- hero advice ----------
+function renderHero(entry) {
+  const card = $("#hero-card");
+  const body = $("#hero-body");
   if (!entry) {
-    el.innerHTML = '<span class="empty">No advice yet — check back after tomorrow\'s 06:00 run.</span>';
+    card.style.borderLeftColor = "var(--border)";
+    body.className = "empty";
+    body.textContent = "No advice yet — check back after tomorrow's 06:00 run.";
     return;
   }
+  body.className = "";
   const a = entry.advice || {};
-  const kindLabel = entry.weekly ? "Weekly review" : "Daily check-in";
-  let html = `<div class="field-label">${entry.date} · ${kindLabel} ${badge(a.color)}</div>`;
+  const st = statusOf(a.color);
+  card.style.borderLeftColor = st.c;
+
+  const kickerRow = el("div", "kicker-row");
+  const kicker = el("span", "label", (entry.weekly ? "Weekly review" : "Daily check-in") + " · " + fmtDate(entry.date));
+  const chip = el("span", "chip");
+  chip.style.setProperty("--c", st.c);
+  chip.textContent = st.label;
+  kickerRow.append(kicker, chip);
+
+  const frag = document.createDocumentFragment();
+  frag.append(kickerRow);
+
   if (entry.weekly) {
-    html += field("Performance", a.performance) + field("Recovery", a.recovery) +
-            field("🏃 Running", a.run_advice) + field("🚴 Cycling", a.bike_advice) +
-            field("⚠️ Watch point", a.watch_point);
+    if (a.performance) frag.append(el("div", "hero-copy", a.performance));
+    const grid = el("div", "grid grid2");
+    if (a.recovery) grid.append(sportBlock(null, "Recovery", a.recovery, null));
+    if (a.run_advice) grid.append(sportBlock("run", "Running", a.run_advice, null));
+    if (a.bike_advice) grid.append(sportBlock("bike", "Cycling", a.bike_advice, null));
+    frag.append(grid);
+    if (a.watch_point && a.watch_point.toLowerCase() !== "nothing notable") {
+      const wp = el("div", "watch-point");
+      wp.innerHTML = `<svg class="ic"><use href="#i-alert"/></svg>`;
+      wp.append(el("span", null, a.watch_point));
+      frag.append(wp);
+    }
   } else {
-    html += field("Status", a.status) + field("🏃 Running", a.run_tip) + field("🚴 Cycling", a.bike_tip);
+    if (a.status) frag.append(el("div", "hero-copy", a.status));
+    const grid = el("div", "grid grid2");
+    grid.append(sportBlock("run", "Running", a.run_tip, a.run_target));
+    grid.append(sportBlock("bike", "Cycling", a.bike_tip, a.bike_target));
+    frag.append(grid);
   }
-  el.innerHTML = html;
+  body.innerHTML = "";
+  body.append(frag);
 }
 
-function renderHistory(history) {
-  const el = document.getElementById("history-body");
-  if (!history.length) { el.innerHTML = '<span class="empty">No history yet.</span>'; return; }
-  el.innerHTML = history.slice().reverse().map(entry => {
-    const a = entry.advice || {};
-    const kindLabel = entry.weekly ? "Weekly" : "Daily";
-    const summary = entry.weekly ? a.performance : a.status;
-    return `<div class="history-entry">
-      <div class="history-date">${entry.date} · ${kindLabel} ${badge(a.color)}</div>
-      <div class="field-value">${summary || ""}</div>
-    </div>`;
-  }).join("");
+function sportBlock(sport, label, text, target) {
+  const wrap = el("div", "sport-row");
+  const l = el("div", "label");
+  if (sport) l.innerHTML = `<svg class="ic ${sport}"><use href="#i-${sport}"/></svg>`;
+  l.append(label);
+  wrap.append(l);
+  wrap.append(el("div", "sport-tip", text || "–"));
+  if (target && target.duration_min != null) {
+    wrap.append(el("span", "target-pill", `${target.duration_min} min · ${target.hr_min}–${target.hr_max} bpm`));
+  }
+  return wrap;
 }
 
-function renderActivities(activities) {
-  const el = document.getElementById("activities-body");
-  if (!activities || !activities.length) { el.innerHTML = '<span class="empty">No activities in the last 14 days.</span>'; return; }
-  let rows = activities.map(a => `<tr>
-    <td>${a.date}</td><td>${a.type}</td><td>${a.name || "-"}</td>
-    <td>${a.distance_km ?? "-"} km</td><td>${a.duration_min ?? "-"} min</td><td>${a.avg_hr ?? "-"}</td>
-  </tr>`).join("");
-  el.innerHTML = `<table><thead><tr><th>Date</th><th>Type</th><th>Name</th><th>Distance</th><th>Duration</th><th>Avg HR</th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-function renderTimeline(history) {
-  const el = document.getElementById("adherence-timeline");
-  const daily = history.filter(e => !e.weekly).slice(-14);
-  if (!daily.length) { el.innerHTML = '<span class="empty">No data yet.</span>'; return; }
-  el.innerHTML = daily.map(entry => {
-    const adh = entry.adherence;
-    if (!adh) return `<div class="day-box" data-color="pending" title="${entry.date}: pending"></div>`;
-    const d = entry.date.slice(5); // MM-DD
-    return `<div class="day-box" data-color="${adh.day_color}" title="${entry.date}
-run: ${adh.run.color}${adh.run.actual_duration_min != null ? " (" + adh.run.actual_duration_min + " min, " + (adh.run.actual_avg_hr ?? "-") + " bpm)" : ""}
-bike: ${adh.bike.color}${adh.bike.actual_duration_min != null ? " (" + adh.bike.actual_duration_min + " min, " + (adh.bike.actual_avg_hr ?? "-") + " bpm)" : ""}">${d.split("-")[1]}</div>`;
-  }).join("");
-}
-
-function drawBarChart(canvas, segments) {
-  // segments: [{label, value(0-100), color}]
-  const ctx = canvas.getContext("2d");
-  const w = canvas.width, h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-  if (!segments) {
-    ctx.fillStyle = "#9a9ba3"; ctx.font = "13px sans-serif";
-    ctx.fillText("Not enough data yet", 10, h / 2);
+// ---------- intensity meters ----------
+function renderIntensity(dist) {
+  const c = $("#intensity-body");
+  c.innerHTML = "";
+  if (!dist || dist.available === false) {
+    c.append(el("div", "empty", "Not enough data yet."));
     return;
   }
-  const barH = 36, gap = 18, top = 20;
-  segments.forEach((s, i) => {
-    const y = top + i * (barH + gap);
-    ctx.fillStyle = "#2b2d38";
-    ctx.fillRect(10, y, w - 70, barH);
-    ctx.fillStyle = s.color;
-    ctx.fillRect(10, y, (w - 70) * (s.value / 100), barH);
-    ctx.fillStyle = "#e6e6e6"; ctx.font = "13px sans-serif";
-    ctx.fillText(s.label, 10, y - 5);
-    ctx.fillText(s.value + "%", w - 55, y + barH / 2 + 4);
-  });
+  const zones = [
+    ["Easy · zone 1–2", dist.low_zone1_2_pct, "#86b6ef"],
+    ["Grey zone · zone 3", dist.mid_zone3_pct, "#3987e5"],
+    ["Hard · zone 4–5", dist.high_zone4_5_pct, "#1c5cab"],
+  ];
+  for (const [label, pct, color] of zones) {
+    const row = el("div", "meter-row");
+    const head = el("div", "meter-head");
+    head.append(el("span", "label", label), el("span", "pct", pct + "%"));
+    const meter = el("div", "meter");
+    const bar = el("i");
+    bar.style.setProperty("--z", color);
+    bar.style.width = pct + "%";
+    meter.append(bar);
+    row.append(head, meter);
+    c.append(row);
+  }
+  c.append(el("div", "meter-foot", `Total: ${dist.total_hr_zone_minutes} zone-minutes this week`));
 }
 
-function drawLineChart(canvas, series) {
-  // series: {label: [{x: dateStr, y: number}], ...}
+// ---------- VO2max chart ----------
+function setupCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
   const ctx = canvas.getContext("2d");
-  const w = canvas.width, h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-  const keys = Object.keys(series).filter(k => series[k] && series[k].length);
-  if (!keys.length) {
-    ctx.fillStyle = "#9a9ba3"; ctx.font = "13px sans-serif";
-    ctx.fillText("Not enough data yet", 10, h / 2);
-    return;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
+}
+
+let vo2Series = null;
+
+function renderVo2Legend(series) {
+  const c = $("#vo2-legend");
+  c.innerHTML = "";
+  const keys = [["running", "var(--run)", "Running"], ["cycling", "var(--bike)", "Cycling"]];
+  for (const [k, color, label] of keys) {
+    if (!series[k] || !series[k].length) continue;
+    const key = el("span", "key");
+    const sw = el("span", "swatch");
+    sw.style.background = color;
+    key.append(sw, label);
+    c.append(key);
   }
-  const allVals = keys.flatMap(k => series[k].map(p => p.y));
-  const min = Math.min(...allVals) - 1, max = Math.max(...allVals) + 1;
-  const colors = { running: "#4ade80", cycling: "#60a5fa" };
-  const pad = 30;
-  keys.forEach(k => {
-    const pts = series[k];
-    ctx.strokeStyle = colors[k] || "#e6e6e6";
-    ctx.lineWidth = 2;
+}
+
+function drawVo2Chart(hoverDate) {
+  const canvas = $("#chart-vo2");
+  const emptyEl = $("#vo2-empty");
+  const series = vo2Series || {};
+  const hasData = (series.running && series.running.length) || (series.cycling && series.cycling.length);
+  emptyEl.style.display = hasData ? "none" : "flex";
+  if (!hasData) { const ctx = canvas.getContext("2d"); ctx.clearRect(0, 0, canvas.width, canvas.height); return; }
+
+  const { ctx, w, h } = setupCanvas(canvas);
+  ctx.clearRect(0, 0, w, h);
+  const padL = 30, padR = 12, padT = 12, padB = 20;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+
+  const allDates = [...new Set([...(series.running||[]).map(p=>p.date), ...(series.cycling||[]).map(p=>p.date)])].sort();
+  const allVals = [...(series.running||[]), ...(series.cycling||[])].map(p => p.value);
+  const min = Math.min(...allVals) - 1.5, max = Math.max(...allVals) + 1.5;
+  const xOf = d => padL + (allDates.indexOf(d) / Math.max(allDates.length - 1, 1)) * plotW;
+  const yOf = v => padT + plotH - ((v - min) / (max - min)) * plotH;
+
+  // gridlines
+  ctx.strokeStyle = "#23242a"; ctx.lineWidth = 1; ctx.font = "11px system-ui, sans-serif"; ctx.fillStyle = "#6b6e78";
+  const ticks = 3;
+  for (let i = 0; i <= ticks; i++) {
+    const v = min + (max - min) * (i / ticks);
+    const y = yOf(v);
+    ctx.beginPath(); ctx.moveTo(padL, Math.round(y) + .5); ctx.lineTo(w - padR, Math.round(y) + .5); ctx.stroke();
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    ctx.fillText(v.toFixed(0), padL - 8, y);
+  }
+  if (allDates.length) {
+    ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+    ctx.fillText(fmtDate(allDates[0], { day: "numeric", month: "short" }), padL, h - 4);
+    ctx.textAlign = "right";
+    ctx.fillText(fmtDate(allDates[allDates.length-1], { day: "numeric", month: "short" }), w - padR, h - 4);
+  }
+
+  const colors = { running: "#3987e5", cycling: "#199e70" };
+  for (const key of ["running", "cycling"]) {
+    const pts = series[key];
+    if (!pts || !pts.length) continue;
+    ctx.strokeStyle = colors[key]; ctx.lineWidth = 2; ctx.lineJoin = "round"; ctx.lineCap = "round";
     ctx.beginPath();
-    pts.forEach((p, i) => {
-      const x = pad + (i / Math.max(pts.length - 1, 1)) * (w - pad * 2);
-      const y = h - pad - ((p.y - min) / (max - min)) * (h - pad * 2);
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-    });
+    pts.forEach((p, i) => { const x = xOf(p.date), y = yOf(p.value); i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y); });
     ctx.stroke();
-    ctx.fillStyle = colors[k] || "#e6e6e6"; ctx.font = "12px sans-serif";
-    ctx.fillText(`${k}: ${pts[pts.length - 1].y}`, pad, 16 + keys.indexOf(k) * 14);
-  });
+    const last = pts[pts.length - 1];
+    const lx = xOf(last.date), ly = yOf(last.value);
+    ctx.fillStyle = "#16171c"; ctx.beginPath(); ctx.arc(lx, ly, 5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = colors[key]; ctx.beginPath(); ctx.arc(lx, ly, 3.5, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = "#f2f3f5"; ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.font = "600 12px system-ui, sans-serif";
+    ctx.fillText(last.value.toFixed(1), Math.min(lx + 8, w - padR - 26), ly);
+  }
+
+  if (hoverDate && allDates.includes(hoverDate)) {
+    const x = xOf(hoverDate);
+    ctx.strokeStyle = "#23242a"; ctx.beginPath(); ctx.moveTo(Math.round(x)+.5, padT); ctx.lineTo(Math.round(x)+.5, padT+plotH); ctx.stroke();
+  }
+
+  canvas._vo2Meta = { allDates, xOf };
 }
+
+function attachVo2Hover() {
+  const canvas = $("#chart-vo2");
+  canvas.addEventListener("pointermove", e => {
+    const meta = canvas._vo2Meta;
+    if (!meta || !meta.allDates.length) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    let nearest = meta.allDates[0], best = Infinity;
+    for (const d of meta.allDates) {
+      const dist = Math.abs(meta.xOf(d) - mx);
+      if (dist < best) { best = dist; nearest = d; }
+    }
+    drawVo2Chart(nearest);
+    const node = el("div");
+    node.append(el("div", "tt-title", fmtDate(nearest)));
+    for (const [key, label, color] of [["running","Running","var(--run)"],["cycling","Cycling","var(--bike)"]]) {
+      const pt = (vo2Series[key] || []).find(p => p.date === nearest);
+      if (!pt) continue;
+      const row = el("div", "tt-row");
+      row.append(el("span", "tt-sport", label));
+      row.append(el("span", null, pt.value.toFixed(1)));
+      node.append(row);
+    }
+    showTooltip(e.clientX, e.clientY, node);
+  });
+  canvas.addEventListener("pointerleave", () => { hideTooltip(); drawVo2Chart(null); });
+}
+
+// ---------- adherence timeline ----------
+function sportTooltipRow(label, sportData) {
+  const row = el("div", "tt-row");
+  row.append(el("span", "tt-sport", label));
+  if (!sportData || !sportData.target) {
+    row.append(el("span", null, sportData && sportData.color !== "gray" ? "no target — trained anyway" : "rest day"));
+    return row;
+  }
+  const t = sportData.target;
+  const planned = `planned ${t.duration_min} min · ${t.hr_min}–${t.hr_max} bpm`;
+  let actual = "not logged";
+  if (sportData.actual_duration_min != null) {
+    actual = `${sportData.actual_duration_min} min` + (sportData.actual_avg_hr != null ? ` · ${sportData.actual_avg_hr} bpm` : "");
+  }
+  row.append(el("span", null, `${planned} → ${actual}`));
+  return row;
+}
+
+function renderAdherence(history) {
+  const timeline = $("#adherence-timeline");
+  const sub = $("#adherence-sub");
+  timeline.innerHTML = "";
+  const daily = history.filter(e => !e.weekly).slice(-14);
+  if (!daily.length) { timeline.append(el("div", "empty", "No data yet.")); sub.textContent = ""; return; }
+
+  const scored = daily.filter(e => e.adherence);
+  const onPlan = scored.filter(e => e.adherence.day_color === "green").length;
+  sub.textContent = scored.length ? `${onPlan} of ${scored.length} scored days on plan` : "";
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  for (const entry of daily) {
+    const day = el("div", "day");
+    if (entry.date === todayStr) day.classList.add("today");
+    day.tabIndex = 0;
+    day.append(el("span", "dow", fmtDate(entry.date, { weekday: "narrow" })));
+
+    const adh = entry.adherence;
+    for (const sport of ["run", "bike"]) {
+      const seg = el("i", "seg");
+      if (!adh) {
+        seg.classList.add("pending");
+      } else {
+        const s = adh[sport];
+        const c = STATUS[s.color] ? STATUS[s.color].c : "var(--surface-2)";
+        if (s.color === "gray") seg.classList.add("rest");
+        else seg.style.setProperty("--c", c);
+      }
+      day.append(seg);
+    }
+    day.append(el("span", "dom", fmtDate(entry.date, { day: "numeric" })));
+
+    const showTip = e => {
+      const node = el("div");
+      node.append(el("div", "tt-title", fmtDate(entry.date, { weekday: "long", day: "numeric", month: "short" })));
+      if (!adh) {
+        node.append(el("div", "tt-row", null));
+        node.lastChild.append("Pending — scored after tomorrow's run.");
+      } else {
+        node.append(sportTooltipRow("Run", adh.run));
+        node.append(sportTooltipRow("Bike", adh.bike));
+      }
+      showTooltip(e.clientX ?? day.getBoundingClientRect().left, e.clientY ?? day.getBoundingClientRect().top, node);
+    };
+    day.addEventListener("pointerenter", showTip);
+    day.addEventListener("pointermove", showTip);
+    day.addEventListener("pointerleave", hideTooltip);
+    day.addEventListener("focus", showTip);
+    day.addEventListener("blur", hideTooltip);
+
+    timeline.append(day);
+  }
+}
+
+// ---------- activities table ----------
+function renderActivities(activities) {
+  const c = $("#activities-body");
+  c.innerHTML = "";
+  if (!activities || !activities.length) { c.append(el("div", "empty", "No activities in the last 14 days.")); return; }
+
+  const table = el("table");
+  const thead = el("thead");
+  const headRow = el("tr");
+  for (const [label, cls] of [["Date",""],["Type",""],["Name",""],["Distance (km)","num"],["Duration (min)","num"],["Avg HR (bpm)","num"]]) {
+    headRow.append(el("th", cls, label));
+  }
+  thead.append(headRow);
+  table.append(thead);
+
+  const tbody = el("tbody");
+  for (const a of activities) {
+    const tr = el("tr");
+    tr.append(el("td", null, fmtDate(a.date, { day: "numeric", month: "short" })));
+    const typeTd = el("td", "type-cell");
+    const isRun = (a.type || "").includes("run");
+    const isBike = /bik|cycl/.test(a.type || "");
+    const dot = el("span", "dot");
+    dot.style.background = isRun ? "var(--run)" : isBike ? "var(--bike)" : "var(--ink-3)";
+    typeTd.append(dot, a.type || "–");
+    tr.append(typeTd);
+    tr.append(el("td", null, a.name || "–"));
+    tr.append(el("td", "num", a.distance_km ?? "–"));
+    tr.append(el("td", "num", a.duration_min ?? "–"));
+    tr.append(el("td", "num", a.avg_hr ?? "–"));
+    tbody.append(tr);
+  }
+  table.append(tbody);
+  c.append(table);
+}
+
+// ---------- history ----------
+function renderHistory(history) {
+  const c = $("#history-body");
+  c.innerHTML = "";
+  if (!history.length) { c.append(el("div", "empty", "No history yet.")); return; }
+
+  const list = el("div", "history-list");
+  const items = history.slice().reverse();
+  const shown = items.slice(0, 20);
+  for (const entry of shown) {
+    const a = entry.advice || {};
+    const st = statusOf(a.color);
+    const e = el("div", "h-entry");
+    e.style.setProperty("--c", st.c);
+    const meta = el("div", "h-meta");
+    meta.append(el("span", "label", fmtDate(entry.date, { day: "numeric", month: "short", year: "numeric" })));
+    if (entry.weekly) meta.append(el("span", "chip neutral", "Weekly"));
+    e.append(meta);
+    const summary = entry.weekly ? a.performance : a.status;
+    if (summary) e.append(el("p", "h-summary", summary));
+    list.append(e);
+  }
+  c.append(list);
+  if (items.length > 20) c.append(el("div", "h-more", `+ ${items.length - 20} older entries`));
+}
+
+// ---------- load ----------
+let lastData = null;
 
 async function load() {
-  const res = await fetch("/api/data");
-  const data = await res.json();
-  if (data.error) {
-    document.getElementById("subtitle").textContent = "Error loading data: " + data.error;
+  let data;
+  try {
+    const res = await fetch("/api/data");
+    data = await res.json();
+  } catch (e) {
+    if (!lastData) $("#hero-body").textContent = "Error loading data.";
     return;
   }
-  document.getElementById("subtitle").textContent = "Local Garmin training data + Claude-generated advice";
-  renderLatest(data.latest);
-  renderHistory(data.history);
+  if (data.error) {
+    if (!lastData) $("#hero-body").textContent = "Error loading data: " + data.error;
+    return;
+  }
+  lastData = data;
+
+  if (data.generated_at) {
+    $("#updated").textContent = "Updated " + new Date(data.generated_at).toLocaleString(undefined, { hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" });
+  }
+  renderTiles(data.metrics);
+  renderHero(data.latest);
+  renderIntensity(data.metrics.intensity_distribution_7d);
+  renderAdherence(data.history);
   renderActivities(data.metrics.recent_activities_14d);
-  renderTimeline(data.history);
+  renderHistory(data.history);
 
-  const dist = data.metrics.intensity_distribution_7d;
-  drawBarChart(document.getElementById("chart-intensity"), dist && dist.available ? [
-    { label: "Low (zone 1-2)", value: dist.low_zone1_2_pct, color: "#4ade80" },
-    { label: "Mid (zone 3)", value: dist.mid_zone3_pct, color: "#facc15" },
-    { label: "High (zone 4-5)", value: dist.high_zone4_5_pct, color: "#f87171" },
-  ] : null);
-
-  const vo2 = data.metrics.vo2max;
-  const series = {};
-  if (vo2 && vo2.running) series.running = [{ x: "28d ago", y: vo2.running.current - (vo2.running.delta_28d || 0) }, { x: "now", y: vo2.running.current }];
-  if (vo2 && vo2.cycling) series.cycling = [{ x: "28d ago", y: vo2.cycling.current - (vo2.cycling.delta_28d || 0) }, { x: "now", y: vo2.cycling.current }];
-  drawLineChart(document.getElementById("chart-vo2"), series);
+  vo2Series = data.metrics.vo2max_series || {};
+  renderVo2Legend(vo2Series);
+  drawVo2Chart(null);
 }
 
+attachVo2Hover();
+let resizeTimer;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => drawVo2Chart(null), 150); });
+
 load();
+setInterval(load, 5 * 60 * 1000);
 </script>
 </body>
 </html>

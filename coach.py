@@ -295,6 +295,22 @@ def _vo2max_trend() -> dict:
     return result or {"available": False}
 
 
+def vo2max_series(days: int) -> dict:
+    """Actual reading-by-reading VO2max history for the dashboard's trend chart —
+    _vo2max_trend() above only keeps two points (now vs. ~28d ago) for the LLM
+    prompt, which isn't enough to draw a real line. Only non-null readings are
+    returned (both fields are sparse — see _vo2max_trend's docstring)."""
+    start = local_midnight_utc(days - 1)
+    result = {}
+    for sport, field in (("running", "VO2_max_value"), ("cycling", "VO2_max_value_cycling")):
+        rows = influx_query(
+            f'SELECT {field} FROM "VO2_Max" WHERE "Device" = \'{WATCH_DEVICE}\' '
+            f'AND time >= \'{start.isoformat()}\' ORDER BY time ASC'
+        )
+        result[sport] = [{"date": r["time"][:10], "value": r[field]} for r in rows if r.get(field) is not None]
+    return result
+
+
 def _stddev(vals: list[float]) -> float | None:
     if len(vals) < 2:
         return None
