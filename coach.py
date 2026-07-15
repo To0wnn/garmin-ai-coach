@@ -3,6 +3,7 @@
 advice, posts the result to Discord. Runs daily; on Sundays does a full weekly
 review instead of the short daily check-in."""
 
+import fcntl
 import json
 import os
 import sys
@@ -27,6 +28,14 @@ NOW_LOCAL = datetime.now(LOCAL_TZ)
 IS_WEEKLY = NOW_LOCAL.weekday() == 6  # Sunday, in lokale tijd
 STALE_AFTER_HOURS = 36
 OUTPUT_FILE = "/app/output/advies.json"
+# The daily cron run and a manual "run now" dashboard click both ultimately talk
+# to the same single tmux/claude session — an overlap sends two prompts before
+# either gets an Enter, which Claude Code's TUI shows as two separate, never-
+# submitted "[Pasted text #N]" placeholders (a real incident, not hypothetical).
+# A cross-process file lock (not dashboard.py's in-process threading.Lock, which
+# only protects against overlaps within that one process) closes this regardless
+# of which of the two entry points is running.
+LOCK_FILE = "/tmp/coach.lock"
 # Persisted on the coach-home volume so it survives container restarts/rebuilds.
 LOG_FILE = os.path.expanduser("~/coach_log.json")
 LOG_HISTORY_DAYS = 14
@@ -904,9 +913,18 @@ def main():
 
 
 if __name__ == "__main__":
+    lock_fd = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("Another coach.py run is already in progress — skipping.", file=sys.stderr)
+        sys.exit(1)
     try:
         main()
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)
         post_error_to_discord(e)
         sys.exit(1)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()

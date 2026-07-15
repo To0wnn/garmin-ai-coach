@@ -34,7 +34,11 @@ def _run_coach_background():
     try:
         result = subprocess.run(["python3", COACH_SCRIPT], capture_output=True, text=True, timeout=330)
         if result.returncode != 0:
-            _run_state["error"] = (result.stderr or result.stdout or "unknown error")[-1000:]
+            stderr = result.stderr or result.stdout or "unknown error"
+            if "already in progress" in stderr:
+                _run_state["error"] = "Already running (e.g. the daily cron fired at the same time) — try again shortly."
+            else:
+                _run_state["error"] = stderr[-1000:]
     except Exception as e:
         _run_state["error"] = str(e)
     finally:
