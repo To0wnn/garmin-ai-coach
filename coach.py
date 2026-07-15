@@ -898,6 +898,10 @@ def post_discord(embed: dict):
             raise RuntimeError(f"Discord post failed: {resp.status}")
 
 
+def _footer_text() -> str:
+    return f"Garmin AI Coach — {get_provider(PROVIDER)['label']}"
+
+
 def build_embed(advice: dict, weekly: bool) -> dict:
     color = COLOR_MAP.get(str(advice.get("color", "")).lower(), 0x95A5A6)
     today_str = NOW_LOCAL.strftime("%d-%m-%Y")
@@ -913,7 +917,7 @@ def build_embed(advice: dict, weekly: bool) -> dict:
                 {"name": "🚴 Cycling", "value": _field(advice.get("bike_advice")), "inline": False},
                 {"name": "⚠️ Watch point", "value": _field(advice.get("watch_point")), "inline": False},
             ],
-            "footer": {"text": "Garmin AI Coach — Claude"},
+            "footer": {"text": _footer_text()},
         }
     return {
         "title": f"📅 Today — {today_str}",
@@ -923,7 +927,7 @@ def build_embed(advice: dict, weekly: bool) -> dict:
             {"name": "🏃 Running", "value": _field(advice.get("run_tip")), "inline": False},
             {"name": "🚴 Cycling", "value": _field(advice.get("bike_tip")), "inline": False},
         ],
-        "footer": {"text": "Garmin AI Coach — Claude"},
+        "footer": {"text": _footer_text()},
     }
 
 
@@ -932,7 +936,7 @@ def post_error_to_discord(error: Exception):
         "title": "⚠️ Garmin AI Coach — failed",
         "color": 0x95A5A6,
         "description": f"```{str(error)[:1900]}```",
-        "footer": {"text": "Garmin AI Coach — Claude"},
+        "footer": {"text": _footer_text()},
     }
     try:
         post_discord(embed)
