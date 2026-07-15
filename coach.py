@@ -156,6 +156,7 @@ def build_metrics() -> dict:
         "training_status": _training_status(),
         "lactate_threshold_running": _lactate_threshold(),
         "cycling_hr_zones": _cycling_hr_zones(today, last_28d),
+        "cycling_power_zones": _cycling_power_zones(),
         "baseline_deviation": _baseline_deviation(),
         "recent_activities_14d": _activities_since(local_midnight_utc(LOG_HISTORY_DAYS - 1)),
         "intensity_distribution_7d": _intensity_distribution(7),
@@ -407,7 +408,9 @@ def _lactate_threshold() -> dict:
 def _cycling_hr_zones(today: list[dict], last_28d: list[dict]) -> dict:
     # No cycling-specific lactate threshold available via Garmin's API (the endpoint
     # exists technically but returns no data for this account) — compute generic HR
-    # zones with the Karvonen formula instead of a real FTP/threshold test.
+    # zones with the Karvonen formula instead of a real FTP/threshold test. Kept as a
+    # fallback for when _cycling_power_zones() has no data (e.g. a new install with
+    # no long laps yet); when power data is available, that's the primary zone source.
     resting_hr = (today[0].get("restingHeartRate") if today else None) or avg(last_28d, "restingHeartRate")
     # Only cycling activities for max HR — running typically gives 5-10 bpm higher
     # peaks and would skew the cycling zones.
@@ -425,6 +428,49 @@ def _cycling_hr_zones(today: list[dict], last_28d: list[dict]) -> dict:
         "zone3_tempo_bpm": [round(resting_hr + reserve * 0.7), round(resting_hr + reserve * 0.8)],
         "zone4_threshold_bpm": [round(resting_hr + reserve * 0.8), round(resting_hr + reserve * 0.9)],
         "zone5_vo2max_bpm": [round(resting_hr + reserve * 0.9), max_hr],
+    }
+
+
+FTP_MIN_LAP_SECONDS = 18 * 60  # long enough to be a meaningful sustained-effort proxy for a 20-min FTP test
+FTP_FROM_20MIN_FACTOR = 0.95  # standard estimate: FTP ≈ 95% of best ~20-min average power
+
+
+def _cycling_power_zones() -> dict:
+    """Estimates FTP from the single best sustained-power lap (>=18 min) across the
+    last 90 days of cycling activities, using the standard "95% of best ~20-min
+    power" rule of thumb — no dedicated FTP test needed, just real ride data the
+    watch/bike computer already recorded per lap. This is more direct than the HR-based
+    Karvonen zones in _cycling_hr_zones() (which only approximates effort via heart
+    rate), but it's still an estimate from whatever laps happen to exist, not a
+    structured test — label it as such in the prompt."""
+    # ActivityLap uses its own coarse Sport field ("cycling"/"running"/"generic"), unlike
+    # ActivitySummary's fine-grained activityType (road_biking/gravel_cycling/...) that
+    # SPORT_TYPES is built for — a different field, not reusable here.
+    rows = influx_query(
+        f'SELECT Avg_Power, Elapsed_Time FROM "ActivityLap" WHERE time > now() - 90d '
+        f'AND Sport = \'cycling\' AND "Device" = \'{WATCH_DEVICE}\''
+    )
+    candidates = [
+        r["Avg_Power"]
+        for r in rows
+        if r.get("Avg_Power") is not None and r.get("Elapsed_Time") is not None and r["Elapsed_Time"] >= FTP_MIN_LAP_SECONDS
+    ]
+    if not candidates:
+        return {"available": False}
+    best_power = max(candidates)
+    ftp = round(best_power * FTP_FROM_20MIN_FACTOR)
+    # Standard 6-zone model (Coggan), expressed as % of FTP.
+    return {
+        "available": True,
+        "estimated_ftp_watts": ftp,
+        "estimated_from_best_lap_watts": best_power,
+        "note": "estimated from the best sustained (18+ min) lap in the last 90 days, not a dedicated FTP test",
+        "zone1_recovery_watts": [0, round(ftp * 0.55)],
+        "zone2_endurance_watts": [round(ftp * 0.56), round(ftp * 0.75)],
+        "zone3_tempo_watts": [round(ftp * 0.76), round(ftp * 0.90)],
+        "zone4_threshold_watts": [round(ftp * 0.91), round(ftp * 1.05)],
+        "zone5_vo2max_watts": [round(ftp * 1.06), round(ftp * 1.20)],
+        "zone6_anaerobic_watts": [round(ftp * 1.21), None],
     }
 
 
@@ -605,10 +651,19 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
 - lactate_threshold_running.threshold_pace_min_per_km: exact, measured threshold pace for running,
   ALREADY FORMATTED as "M:SS min/km" (e.g. "5:41 min/km") — reuse this notation verbatim,
   don't recalculate or interpret it as a decimal number.
-- cycling_hr_zones: NO measured threshold available (Garmin doesn't provide this for cycling on
-  this account) — these are generic, calculated heart rate zones (Karvonen formula based on
-  resting HR and measured max HR during cycling activities), less precise than the running
-  threshold. Mention this when giving cycling advice.
+- cycling_power_zones: PREFERRED source for cycling intensity targets when "available": true.
+  estimated_ftp_watts is derived from the single best sustained (18+ min) power lap in the last
+  90 days, using the standard "FTP ≈ 95% of best ~20-min power" rule — a real estimate from
+  actual ride data, not a guess, but also not a dedicated FTP test, so phrase cycling advice in
+  watts using these zones and mention once that the FTP is estimated from recent rides (not a
+  formal test). zone1-6 are the standard % of FTP power zones (recovery/endurance/tempo/
+  threshold/VO2max/anaerobic); zone6's upper bound is intentionally unbounded (null).
+- cycling_hr_zones: fallback ONLY — use this for cycling intensity targets when
+  cycling_power_zones is NOT available (e.g. not enough long laps yet). These are generic,
+  calculated heart rate zones (Karvonen formula based on resting HR and measured max HR during
+  cycling activities), less precise than a power-based estimate. Mention this fallback status
+  when using it. Never mix watts and this HR zone in the same tip — pick one source per tip
+  based on what's available.
 - today.sleep_hours, today.sleep_score (Garmin's own 0-100 sleep quality score) and
   today.sleep_vs_prior_6d_avg_hours (difference vs. the average of the preceding 6 days, so
   not counting today itself): sleep is a FULL decision factor alongside readiness/ACWR, not
@@ -636,10 +691,13 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
   a session for that sport today (e.g. rest day, or already covered under
   activities_already_done_today). Otherwise: {"duration_min": <int>, "hr_min": <int>,
   "hr_max": <int>} — duration_min is your intended session length in minutes, hr_min/hr_max
-  is the target average-heart-rate range for that session (not a hard ceiling — an average
-  across the whole session). These must be concrete numbers consistent with what you just
-  wrote in run_tip/bike_tip, not a separate or vaguer suggestion — e.g. if run_tip says
-  "40 minute easy run, HR 130-150", run_target must be
+  is the target average-heart-rate RANGE for that session (not a hard ceiling — an average
+  across the whole session), used for tracking adherence afterwards. Always fill this with a
+  HR range even when bike_tip's headline intensity is given in watts (from
+  cycling_power_zones) — convert/estimate the equivalent HR range for the target power zone so
+  adherence can still be tracked from recorded heart rate. These must be consistent with what
+  you just wrote in run_tip/bike_tip, not a separate or vaguer suggestion — e.g. if run_tip
+  says "40 minute easy run, HR 130-150", run_target must be
   {"duration_min": 40, "hr_min": 130, "hr_max": 150}.
 - recent_activities_14d: full activity history of the last 14 days (date, type, duration,
   avg HR), NOT necessarily one entry per day — there can be, and often are, rest days with no
