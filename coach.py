@@ -471,12 +471,17 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
   these as a load-ramp guardrail (how fast load is rising vs. your recent average), not as
   a direct injury prediction; the science behind the original "injury risk" framing has been
   formally challenged, so don't state it as established fact. This covers overall load
-  (running + cycling combined) — see training_load_by_sport for a per-sport view, which can
-  show one sport ramping while the combined figure still looks fine.
+  (running + cycling combined) and is the PRIMARY figure for "should today involve hard
+  training or not" — the body has one recovery system regardless of how many sports produced
+  the load, so this combined number always takes priority over the per-sport figures below.
 - training_load_by_sport.<running|cycling>.load_ramp_ratio: this week's training-load sum for
   that sport specifically, divided by its 4-week weekly average — same interpretation bands as
-  ACWR above, but per sport (Garmin's own ACWR is combined). Don't call this figure "ACWR" —
-  it's a lighter, differently-weighted approximation using Garmin's per-activity load number.
+  ACWR above, but per sport (Garmin's own ACWR is combined). This is a SECONDARY, diagnostic
+  signal, not a second recovery gate — use it only to explain WHICH sport is driving a change
+  (e.g. "the combined ACWR is fine, but running specifically ramped up fast, so keep that one
+  sport conservative even though cycling volume could handle more"), never to override or add
+  to the combined ACWR's verdict on overall training load. Don't call this figure "ACWR" — it's
+  a lighter, differently-weighted approximation using Garmin's per-activity load number.
   null means not enough load in the last 28 days to compute a meaningful ratio. Treat a very
   high ratio (e.g. >3) with caution if weekly_avg_last_28d is small (e.g. under ~30) — with a
   low, sparse baseline (that sport trained only occasionally) a single session this week can
