@@ -397,11 +397,15 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
   For the sport not done at all today: give normal advice. If the list is empty: give a
   suggestion for both sports.
 - recent_activities_14d: full activity history of the last 14 days (date, type, duration,
-  avg HR). Use this to vary the workout type sensibly instead of suggesting the same generic
-  endurance session every day — e.g. if there's been no intensity in several days and
-  readiness/ACWR allow it, a tempo or interval session is appropriate; if there have already
+  avg HR), NOT necessarily one entry per day — there can be, and often are, rest days with no
+  entry at all in between. Use this to vary the workout type sensibly instead of suggesting the
+  same generic endurance session every day — e.g. if there's been no intensity in several days
+  and readiness/ACWR allow it, a tempo or interval session is appropriate; if there have already
   been 2+ hard sessions this week, favor endurance/recovery instead. Reference concrete
-  sessions from this list when relevant (e.g. "after yesterday's 12km tempo run...").
+  sessions from this list when relevant (e.g. "after yesterday's 12km tempo run..."). Never
+  state a count of consecutive days ("Nth day in a row") unless you have actually checked the
+  `date` field of every entry and confirmed there is no gap — when in doubt, just describe the
+  pattern qualitatively (e.g. "frequent cycling load this week") instead of inventing a number.
 - coach_log: your own last 14 days of advice (JSON, oldest first). Use this to
   stay consistent (don't contradict yesterday's plan without reason) and to build an actual
   short-term plan across days (e.g. if you suggested an easy day yesterday, today can pick up
