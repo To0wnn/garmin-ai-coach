@@ -13,17 +13,26 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+import settings as _settings
+from providers import get_provider
+
+_SETTINGS = _settings.read_settings()
+
 INFLUXDB_URL = os.environ["INFLUXDB_URL"]  # e.g. http://172.17.0.1:8187
+INFLUXDB_DB = os.environ.get("INFLUXDB_DB", "GarminStats")
+DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
+# Dashboard-editable (settings.py / ~/coach_settings.json) — not read from .env
+# directly anymore, so a provider/language/watch-device change on the settings
+# page takes effect on the next run without a container restart.
+PROVIDER = _SETTINGS["provider"]
+LANGUAGE = _SETTINGS["language"]  # e.g. English, Nederlands, Deutsch
 # DailyStats/SleepSummary carry a per-device tag (watch, HRM strap, bike computer,
 # speed sensor) — several fields (totalSteps, stressPercentage) are only meaningful
 # from the watch itself and silently wrong from other devices (e.g. a chest strap
 # reporting 227 steps vs. the watch's 1790 for the same day). Filtering on this
 # pins those queries to the one full/reliable source.
-WATCH_DEVICE = os.environ.get("WATCH_DEVICE", "fenix 8 - 47mm, AMOLED")
-INFLUXDB_DB = os.environ.get("INFLUXDB_DB", "GarminStats")
-DISCORD_WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
-LANGUAGE = os.environ.get("LANGUAGE", "English")  # e.g. English, Nederlands, Deutsch
-LOCAL_TZ = ZoneInfo(os.environ.get("LOCAL_TZ", "Europe/Amsterdam"))
+WATCH_DEVICE = _SETTINGS["watch_device"]
+LOCAL_TZ = ZoneInfo(_SETTINGS["local_tz"])
 NOW_LOCAL = datetime.now(LOCAL_TZ)
 IS_WEEKLY = NOW_LOCAL.weekday() == 6  # Sunday, in lokale tijd
 STALE_AFTER_HOURS = 36
@@ -835,19 +844,21 @@ orange/red), regardless of {LANGUAGE}:
 {disclaimer}
 
 Write ONLY the JSON (nothing else, no explanation, no markdown code block) to the file
-{OUTPUT_FILE} using the Write tool. Then give a brief confirmation in the chat."""
+{OUTPUT_FILE} using the {get_provider(PROVIDER)["write_tool_name"]} tool. Then give a brief confirmation in the chat."""
 
 
 def call_claude(prompt: str) -> dict:
-    """Sends the prompt to the permanent 'coach' tmux session instead of spawning
-    a fresh `claude -p` subprocess — the latter triggers an expensive cache write
-    (system prompt/tools) every time, which burns a disproportionate amount of
-    the session quota on a cold/fresh container start.
+    """Sends the prompt to the permanent 'coach' tmux session (running whichever
+    provider is selected — see providers.py) instead of spawning a fresh
+    headless CLI subprocess per call — the latter triggers an expensive cache
+    write (system prompt/tools) every time, which burns a disproportionate
+    amount of the session quota on a cold/fresh container start.
 
-    Claude writes the answer itself to OUTPUT_FILE (via the Write tool) instead
-    of us trying to scrape it from the tmux screen text — screen-text parsing
-    turned out to be fragile (race conditions with intermediate 'thinking'
-    frames, line wraps that broke JSON strings, markers seen too early/late)."""
+    The CLI writes the answer itself to OUTPUT_FILE (via its file-write tool)
+    instead of us trying to scrape it from the tmux screen text — screen-text
+    parsing turned out to be fragile (race conditions with intermediate
+    'thinking' frames, line wraps that broke JSON strings, markers seen too
+    early/late)."""
     import session_ask
 
     session_ask.ask_and_wait_for_file(prompt, OUTPUT_FILE)

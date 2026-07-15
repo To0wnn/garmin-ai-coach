@@ -58,6 +58,55 @@
   #run-btn.spinning .ic { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   #run-error { font-size: 12px; color: var(--crit); }
+  #settings-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; background: var(--surface); border: 1px solid var(--border);
+    color: var(--ink-2); border-radius: var(--radius-s); cursor: pointer;
+  }
+  #settings-btn:hover { background: var(--surface-2); color: var(--ink); }
+
+  /* settings modal */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 30;
+    display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px;
+  }
+  .modal-overlay[hidden] { display: none; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    width: 100%; max-width: 460px; padding: 24px; max-height: calc(100vh - 96px); overflow-y: auto;
+  }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  .modal-head h2 { font-size: 16px; font-weight: 650; margin: 0; }
+  .modal-close { background: none; border: none; color: var(--ink-3); cursor: pointer; padding: 4px; }
+  .modal-close:hover { color: var(--ink); }
+  .field-row { margin-bottom: 16px; }
+  .field-row label { display: block; font-size: 12px; color: var(--ink-2); margin-bottom: 6px; }
+  .field-row select, .field-row input {
+    width: 100%; background: var(--surface-2); border: 1px solid var(--border); color: var(--ink);
+    border-radius: var(--radius-s); padding: 8px 10px; font-size: 13px; font-family: inherit;
+  }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+  .btn {
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--ink);
+    border-radius: var(--radius-s); padding: 7px 14px; font-size: 13px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  .btn:hover:not(:disabled) { background: var(--border); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn-primary { background: var(--run); border-color: var(--run); color: white; }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+  .auth-box {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-s);
+    padding: 14px; margin-top: 4px; font-size: 12px;
+  }
+  .auth-status { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .auth-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .auth-dot.ok { background: var(--good); }
+  .auth-dot.no { background: var(--crit); }
+  .auth-link { word-break: break-all; color: var(--run); }
+  .settings-msg { font-size: 12px; margin-top: 10px; }
+  .settings-msg.err { color: var(--crit); }
+  .settings-msg.ok { color: var(--good); }
 
   /* icons */
   .ic { width: 16px; height: 16px; vertical-align: -3px; stroke: currentColor; fill: none;
@@ -199,6 +248,8 @@
     <symbol id="i-battery" viewBox="0 0 24 24"><rect x="1" y="7" width="18" height="10" rx="2"/><line x1="23" y1="11" x2="23" y2="13"/></symbol>
     <symbol id="i-steps" viewBox="0 0 24 24"><path d="M6 3a2 2 0 100 4 2 2 0 000-4zm0 8v10M18 13a2 2 0 100 4 2 2 0 000-4zm0 4v4"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M20.5 9A9 9 0 004.6 5.6L1 9m22 6l-3.6 3.4A9 9 0 013.5 15"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 008.5 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H2a2 2 0 010-4h.09A1.65 1.65 0 003.6 8.5a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H8a1.65 1.65 0 001-1.51V2a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V8a1.65 1.65 0 001.51 1H22a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
   </svg>
 
   <div class="wrap">
@@ -207,12 +258,55 @@
       <div class="top-right">
         <span id="run-error"></span>
         <span id="updated"></span>
+        <button id="settings-btn" type="button" title="Settings">
+          <svg class="ic"><use href="#i-settings"/></svg>
+        </button>
         <button id="run-btn" type="button">
           <svg class="ic"><use href="#i-refresh"/></svg>
           <span id="run-btn-label">Run now</span>
         </button>
       </div>
     </header>
+
+    <div class="modal-overlay" id="settings-modal" hidden>
+      <div class="modal">
+        <div class="modal-head">
+          <h2>Settings</h2>
+          <button class="modal-close" id="settings-close" type="button">
+            <svg class="ic"><use href="#i-x"/></svg>
+          </button>
+        </div>
+
+        <div class="field-row">
+          <label for="set-provider">AI provider</label>
+          <select id="set-provider"></select>
+        </div>
+        <div class="field-row">
+          <label for="set-language">Advice language</label>
+          <input id="set-language" type="text" placeholder="English">
+        </div>
+        <div class="field-row">
+          <label for="set-watch">Watch device name (InfluxDB Device tag)</label>
+          <input id="set-watch" type="text" placeholder="fenix 8 - 47mm, AMOLED">
+        </div>
+        <div class="field-row">
+          <label for="set-tz">Timezone</label>
+          <input id="set-tz" type="text" placeholder="Europe/Amsterdam">
+        </div>
+
+        <div class="field-row">
+          <label>Login status</label>
+          <div class="auth-box" id="auth-box">Loading…</div>
+        </div>
+
+        <div class="settings-msg" id="settings-msg"></div>
+
+        <div class="modal-actions">
+          <button class="btn" id="settings-cancel" type="button">Cancel</button>
+          <button class="btn btn-primary" id="settings-save" type="button">Save</button>
+        </div>
+      </div>
+    </div>
 
     <div class="grid tiles" id="tiles"></div>
 
@@ -806,6 +900,205 @@ runBtn.addEventListener("click", async () => {
 // If a run (manual or cron) is already in progress when the page loads,
 // reflect that instead of showing an idle "Run now" button.
 pollRunStatus();
+
+// ---------- settings modal ----------
+const modal = $("#settings-modal");
+const settingsBtn = $("#settings-btn");
+const settingsMsg = $("#settings-msg");
+const authBox = $("#auth-box");
+const providerSelect = $("#set-provider");
+let loadedSettings = null;
+
+function closeModal() {
+  modal.hidden = true;
+  settingsMsg.textContent = "";
+  settingsMsg.className = "settings-msg";
+}
+
+async function refreshAuthBox() {
+  authBox.textContent = "Checking…";
+  let status;
+  try {
+    status = await (await fetch("/api/auth-status")).json();
+  } catch (e) {
+    authBox.textContent = "Could not check login status.";
+    return;
+  }
+  authBox.innerHTML = "";
+  const row = el("div", "auth-status");
+  const dot = el("span", "auth-dot " + (status.logged_in ? "ok" : "no"));
+  row.append(dot, status.logged_in
+    ? `Logged in (${status.provider})`
+    : `Not logged in (${status.provider})`);
+  authBox.append(row);
+
+  if (!status.logged_in) {
+    const loginBtn = el("button", "btn", "Log in");
+    loginBtn.type = "button";
+    loginBtn.style.marginTop = "8px";
+    loginBtn.addEventListener("click", startLoginFlow);
+    authBox.append(loginBtn);
+  } else {
+    const logoutBtn = el("button", "btn", "Log out");
+    logoutBtn.type = "button";
+    logoutBtn.style.marginTop = "8px";
+    logoutBtn.addEventListener("click", async () => {
+      logoutBtn.disabled = true;
+      logoutBtn.textContent = "Logging out…";
+      try {
+        const res = await fetch("/api/logout", { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) {
+          authBox.append(el("div", null, data.reason || "Could not log out."));
+          logoutBtn.disabled = false;
+          logoutBtn.textContent = "Log out";
+          return;
+        }
+      } catch (e) {
+        logoutBtn.disabled = false;
+        logoutBtn.textContent = "Log out";
+        return;
+      }
+      refreshAuthBox();
+    });
+    authBox.append(logoutBtn);
+  }
+}
+
+async function startLoginFlow() {
+  authBox.innerHTML = "Starting login…";
+  let result;
+  try {
+    result = await (await fetch("/api/login/start", { method: "POST" })).json();
+  } catch (e) {
+    authBox.textContent = "Could not start login.";
+    return;
+  }
+  if (!result.url) {
+    authBox.textContent = "No login URL appeared — the session may already be logged in, or needs a manual check.";
+    return;
+  }
+  authBox.innerHTML = "";
+  authBox.append(el("div", null, "Open this link, log in, then paste the code you get back:"));
+  const link = el("a", "auth-link", result.url);
+  link.href = result.url;
+  link.target = "_blank";
+  link.rel = "noopener";
+  authBox.append(link);
+
+  const codeInput = document.createElement("input");
+  codeInput.type = "text";
+  codeInput.placeholder = "Paste code here";
+  codeInput.style.marginTop = "8px";
+  codeInput.style.width = "100%";
+  codeInput.style.background = "var(--surface)";
+  codeInput.style.border = "1px solid var(--border)";
+  codeInput.style.color = "var(--ink)";
+  codeInput.style.borderRadius = "var(--radius-s)";
+  codeInput.style.padding = "6px 8px";
+  codeInput.style.fontSize = "12px";
+  authBox.append(codeInput);
+
+  const submitBtn = el("button", "btn", "Submit code");
+  submitBtn.type = "button";
+  submitBtn.style.marginTop = "8px";
+  submitBtn.addEventListener("click", async () => {
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Checking…";
+    try {
+      const res = await (await fetch("/api/login/code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: codeInput.value }),
+      })).json();
+      if (res.logged_in) {
+        refreshAuthBox();
+      } else {
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Submit code";
+        authBox.append(el("div", null, "Login not confirmed yet — check the code and try again."));
+      }
+    } catch (e) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Submit code";
+    }
+  });
+  authBox.append(submitBtn);
+}
+
+async function openSettingsModal() {
+  modal.hidden = false;
+  settingsMsg.textContent = "";
+  let s;
+  try {
+    s = await (await fetch("/api/settings")).json();
+  } catch (e) {
+    settingsMsg.textContent = "Could not load settings.";
+    settingsMsg.className = "settings-msg err";
+    return;
+  }
+  loadedSettings = s;
+  providerSelect.innerHTML = "";
+  for (const [key, label] of Object.entries(s.providers || {})) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = label;
+    if (key === s.provider) opt.selected = true;
+    providerSelect.append(opt);
+  }
+  $("#set-language").value = s.language || "";
+  $("#set-watch").value = s.watch_device || "";
+  $("#set-tz").value = s.local_tz || "";
+  refreshAuthBox();
+}
+
+settingsBtn.addEventListener("click", openSettingsModal);
+$("#settings-close").addEventListener("click", closeModal);
+$("#settings-cancel").addEventListener("click", closeModal);
+modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+
+$("#settings-save").addEventListener("click", async () => {
+  const saveBtn = $("#settings-save");
+  const body = {
+    provider: providerSelect.value,
+    language: $("#set-language").value.trim() || "English",
+    watch_device: $("#set-watch").value.trim(),
+    local_tz: $("#set-tz").value.trim() || "Europe/Amsterdam",
+  };
+  const providerChanged = loadedSettings && body.provider !== loadedSettings.provider;
+  saveBtn.disabled = true;
+  saveBtn.textContent = providerChanged ? "Switching…" : "Saving…";
+  settingsMsg.textContent = "";
+  try {
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      settingsMsg.textContent = data.reason || "Could not save settings.";
+      settingsMsg.className = "settings-msg err";
+    } else {
+      settingsMsg.textContent = providerChanged ? "Saved — provider switched." : "Saved.";
+      settingsMsg.className = "settings-msg ok";
+      loadedSettings = data.settings;
+      if (providerChanged) {
+        // Provider switch needs a moment to show the new login status before
+        // closing, rather than closing immediately and hiding that info.
+        await refreshAuthBox();
+        setTimeout(closeModal, 1200);
+      } else {
+        setTimeout(closeModal, 500);
+      }
+    }
+  } catch (e) {
+    settingsMsg.textContent = "Could not save settings.";
+    settingsMsg.className = "settings-msg err";
+  }
+  saveBtn.disabled = false;
+  saveBtn.textContent = "Save";
+});
 
 load();
 setInterval(load, 5 * 60 * 1000);

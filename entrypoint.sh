@@ -1,12 +1,6 @@
 #!/bin/sh
 set -eu
 
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-    echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN not set" >&2
-    exit 1
-fi
-
-export CLAUDE_CODE_OAUTH_TOKEN
 export TMUX_TMPDIR=/tmp/tmux-shared
 mkdir -p "$TMUX_TMPDIR"
 chmod 1777 "$TMUX_TMPDIR"
@@ -15,37 +9,31 @@ chmod 1777 "$TMUX_TMPDIR"
 # fix ownership so the 'coach' user can write to it.
 chown coach:coach /home/coach
 
-# Permanent tmux session with an always-running claude instance, separate from
-# dev-machine sessions — this keeps the system prompt/tool cache warm between
-# daily cron calls, avoiding a fresh container start per run (which burned a
-# disproportionate amount of the session quota).
-# --dangerously-skip-permissions refuses to run as root, hence the 'coach' user.
-#
-# First a headless warmup call: this writes the account/auth record to
-# ~/.claude.json so the interactive session afterwards doesn't ask for a
-# browser login again (headless mode and interactive mode turn out to have a
-# different auth-verification path — interactive checks for an existing
-# account record, headless works directly off the env var).
-gosu coach env CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" HOME=/home/coach \
-    claude -p "ready" --output-format json > /dev/null 2>&1 || true
+PROVIDER=$(gosu coach python3 -c "import settings; print(settings.read_settings()['provider'])")
 
-gosu coach env CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" TMUX_TMPDIR="$TMUX_TMPDIR" HOME=/home/coach \
-    tmux new-session -d -s coach -x 220 -y 50 "claude --dangerously-skip-permissions"
+# Claude Code's env-var token path stays supported as an alternative to the
+# dashboard login flow (see providers.py/session_manager.py) — if set, do the
+# same headless warmup call as before so the account record exists before the
+# interactive tmux session starts. Gemini CLI has no equivalent split (its
+# cached credential file works for both headless and interactive), so this
+# step is Claude-specific and skipped entirely for Gemini.
+if [ "$PROVIDER" = "claude" ] && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    gosu coach env CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" HOME=/home/coach \
+        claude -p "ready" --output-format json > /dev/null 2>&1 || true
+fi
 
-# Wait until claude has actually finished starting before cron can fire at it.
-# Matches both the normal input prompt and (as a fallback) a leftover onboarding prompt.
-for i in $(seq 1 30); do
-    pane=$(gosu coach env TMUX_TMPDIR="$TMUX_TMPDIR" tmux capture-pane -t coach -p 2>/dev/null || echo "")
-    if echo "$pane" | grep -q '│ >'; then
-        break
-    fi
-    if echo "$pane" | grep -qi "select login method"; then
-        echo "WARNING: claude is still asking for interactive login despite the warmup call." >&2
-        echo "Log in manually once via: docker exec -u coach -e TMUX_TMPDIR=$TMUX_TMPDIR <container> tmux attach -t coach" >&2
-        break
-    fi
-    sleep 1
-done
+# Permanent tmux session with an always-running CLI, separate from dev-machine
+# sessions — this keeps the system prompt/tool cache warm between daily cron
+# calls, avoiding a fresh container start per run (which burned a
+# disproportionate amount of the session quota). session_manager.py owns the
+# launch command per provider and the ready/login-needed detection — the
+# dashboard calls the exact same function when the user switches providers,
+# so there's one implementation instead of a bash version here and a Python
+# version there.
+gosu coach env HOME=/home/coach CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-}" \
+    GEMINI_API_KEY="${GEMINI_API_KEY:-}" TMUX_TMPDIR="$TMUX_TMPDIR" \
+    python3 /app/session_manager.py start "$PROVIDER" || \
+    echo "WARNING: session did not reach ready/login state within the startup timeout — check via the dashboard's Settings page." >&2
 
 # cron runs with an empty environment — write the required env vars to a file
 # that cron_daily.sh reads itself, instead of relying on env vars cron doesn't pass through.
@@ -53,9 +41,6 @@ cat > /app/.env.runtime <<EOF
 export TMUX_TMPDIR="$TMUX_TMPDIR"
 export INFLUXDB_URL="${INFLUXDB_URL:-}"
 export INFLUXDB_DB="${INFLUXDB_DB:-GarminStats}"
-export WATCH_DEVICE="${WATCH_DEVICE:-fenix 8 - 47mm, AMOLED}"
-export LANGUAGE="${LANGUAGE:-English}"
-export LOCAL_TZ="${LOCAL_TZ:-Europe/Amsterdam}"
 export DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 EOF
 chmod 600 /app/.env.runtime
@@ -67,8 +52,7 @@ chmod 600 /app/.env.runtime
 # coach.py directly as a subprocess, inheriting this process's environment.
 gosu coach env HOME=/home/coach TMUX_TMPDIR="$TMUX_TMPDIR" \
     INFLUXDB_URL="${INFLUXDB_URL:-}" INFLUXDB_DB="${INFLUXDB_DB:-GarminStats}" \
-    WATCH_DEVICE="${WATCH_DEVICE:-fenix 8 - 47mm, AMOLED}" DASHBOARD_PORT="${DASHBOARD_PORT:-8420}" \
-    LANGUAGE="${LANGUAGE:-English}" LOCAL_TZ="${LOCAL_TZ:-Europe/Amsterdam}" \
+    DASHBOARD_PORT="${DASHBOARD_PORT:-8420}" \
     DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}" \
     python3 /app/dashboard.py &
 
