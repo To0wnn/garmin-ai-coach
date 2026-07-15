@@ -639,6 +639,7 @@ JSON_SCHEMA_DAILY = """{
   "bike_tip": "<follows TIP STRUCTURE above>",
   "run_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no run session advised today>",
   "bike_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no bike session advised today>",
+  "tomorrow_preview": "<1 sentence: a tentative outlook for tomorrow given how today is expected to go (e.g. 'Tomorrow, if today's endurance ride goes as planned, there's room for a harder run.'). A rough direction only, not a full plan — tomorrow's actual run will use fresh data.>",
   "color": "green or yellow"
 }"""
 
@@ -771,6 +772,13 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
   short-term plan across days (e.g. if you suggested an easy day yesterday, today can pick up
   intensity again, referencing that). If empty, this is one of the first runs — say so is not
   necessary, just give standalone advice.
+- tomorrow_preview (daily only): a brief, tentative outlook for tomorrow, reasoning forward
+  from today's plan and recent load — e.g. if today is an easy/recovery day, tomorrow likely has
+  room for intensity; if today includes a hard session, tomorrow is probably easier. Keep this
+  genuinely tentative (say "likely"/"if today goes as planned", not a firm commitment) since
+  tomorrow's actual advice will be generated fresh with tomorrow's real data (sleep, HRV,
+  whether today's plan was actually followed) — this is a same-day heads-up, not a forecast to
+  be held to. One sentence, no numeric targets (that's what tomorrow's real run_target is for).
 - baseline_deviation.hrv_deviation_sd / resting_hr_deviation_sd: today's HRV/resting HR
   expressed as standard deviations from your 28-day rolling baseline. Roughly: within ±1 SD
   is normal day-to-day variation, beyond ±1 SD is a notable deviation worth mentioning,
@@ -921,14 +929,17 @@ def build_embed(advice: dict, weekly: bool) -> dict:
             ],
             "footer": {"text": _footer_text()},
         }
+    fields = [
+        {"name": "Status", "value": _field(advice.get("status")), "inline": False},
+        {"name": "🏃 Running", "value": _field(advice.get("run_tip")), "inline": False},
+        {"name": "🚴 Cycling", "value": _field(advice.get("bike_tip")), "inline": False},
+    ]
+    if advice.get("tomorrow_preview"):
+        fields.append({"name": "🔭 Tomorrow", "value": _field(advice.get("tomorrow_preview")), "inline": False})
     return {
         "title": f"📅 Today — {today_str}",
         "color": color,
-        "fields": [
-            {"name": "Status", "value": _field(advice.get("status")), "inline": False},
-            {"name": "🏃 Running", "value": _field(advice.get("run_tip")), "inline": False},
-            {"name": "🚴 Cycling", "value": _field(advice.get("bike_tip")), "inline": False},
-        ],
+        "fields": fields,
         "footer": {"text": _footer_text()},
     }
 

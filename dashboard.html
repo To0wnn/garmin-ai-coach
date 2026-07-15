@@ -162,6 +162,7 @@
     display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--ink-2);
   }
   .watch-point .ic { color: var(--warn); flex: none; margin-top: 2px; }
+  .tomorrow-preview .ic { color: var(--run); flex: none; margin-top: 2px; }
 
   /* charts */
   .chart-wrap { position: relative; }
@@ -504,6 +505,12 @@ function renderHero(entry) {
     grid.append(sportBlock("run", "Running", a.run_tip, a.run_target));
     grid.append(sportBlock("bike", "Cycling", a.bike_tip, a.bike_target));
     frag.append(grid);
+    if (a.tomorrow_preview) {
+      const tp = el("div", "watch-point tomorrow-preview");
+      tp.innerHTML = `<svg class="ic"><use href="#i-trend"/></svg>`;
+      tp.append(el("span", null, a.tomorrow_preview));
+      frag.append(tp);
+    }
   }
   body.innerHTML = "";
   body.append(frag);
