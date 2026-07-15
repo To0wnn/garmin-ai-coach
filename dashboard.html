@@ -41,10 +41,23 @@
   }
 
   /* header */
-  header.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  header.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; gap: 16px; }
   header.top h1 { font-size: 20px; font-weight: 650; margin: 0; display: flex; align-items: center; gap: 10px; }
   header.top h1 .ic { width: 22px; height: 22px; color: var(--run); }
+  .top-right { display: flex; align-items: center; gap: 12px; }
   #updated { font-size: 12px; color: var(--ink-3); }
+  #run-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--ink);
+    border-radius: var(--radius-s); padding: 6px 12px; font-size: 12px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  #run-btn:hover:not(:disabled) { background: var(--surface-2); }
+  #run-btn:disabled { opacity: .55; cursor: default; }
+  #run-btn .ic { width: 13px; height: 13px; }
+  #run-btn.spinning .ic { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #run-error { font-size: 12px; color: var(--crit); }
 
   /* icons */
   .ic { width: 16px; height: 16px; vertical-align: -3px; stroke: currentColor; fill: none;
@@ -88,7 +101,8 @@
   .sport-row .label { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
   .sport-row .label .ic.run { color: var(--run); }
   .sport-row .label .ic.bike { color: var(--bike); }
-  .sport-tip { font-size: 14px; color: var(--ink-2); line-height: 1.5; }
+  .sport-tip { font-size: 14px; color: var(--ink-2); line-height: 1.5; white-space: pre-line; }
+  .sport-tip .call { color: var(--ink); font-weight: 600; display: block; margin-bottom: 3px; }
   .target-pill {
     display: inline-block; margin-top: 8px; font-size: 12px; font-variant-numeric: tabular-nums;
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px;
@@ -184,12 +198,20 @@
     <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></symbol>
     <symbol id="i-battery" viewBox="0 0 24 24"><rect x="1" y="7" width="18" height="10" rx="2"/><line x1="23" y1="11" x2="23" y2="13"/></symbol>
     <symbol id="i-steps" viewBox="0 0 24 24"><path d="M6 3a2 2 0 100 4 2 2 0 000-4zm0 8v10M18 13a2 2 0 100 4 2 2 0 000-4zm0 4v4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M20.5 9A9 9 0 004.6 5.6L1 9m22 6l-3.6 3.4A9 9 0 013.5 15"/></symbol>
   </svg>
 
   <div class="wrap">
     <header class="top">
       <h1><svg class="ic"><use href="#i-activity"/></svg> Garmin AI Coach</h1>
-      <span id="updated"></span>
+      <div class="top-right">
+        <span id="run-error"></span>
+        <span id="updated"></span>
+        <button id="run-btn" type="button">
+          <svg class="ic"><use href="#i-refresh"/></svg>
+          <span id="run-btn-label">Run now</span>
+        </button>
+      </div>
     </header>
 
     <div class="grid tiles" id="tiles"></div>
@@ -389,7 +411,17 @@ function sportBlock(sport, label, text, target) {
   if (sport) l.innerHTML = `<svg class="ic ${sport}"><use href="#i-${sport}"/></svg>`;
   l.append(label);
   wrap.append(l);
-  wrap.append(el("div", "sport-tip", text || "–"));
+
+  const tip = el("div", "sport-tip");
+  if (text) {
+    const [call, ...rest] = text.split("\n");
+    tip.append(el("span", "call", call));
+    if (rest.length) tip.append(document.createTextNode(rest.join("\n")));
+  } else {
+    tip.append("–");
+  }
+  wrap.append(tip);
+
   if (target && target.duration_min != null) {
     wrap.append(el("span", "target-pill", `${target.duration_min} min · ${target.hr_min}–${target.hr_max} bpm`));
   }
@@ -710,6 +742,64 @@ async function load() {
 attachVo2Hover();
 let resizeTimer;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => drawVo2Chart(null), 150); });
+
+// ---------- run-now button ----------
+const runBtn = $("#run-btn");
+const runBtnLabel = $("#run-btn-label");
+const runError = $("#run-error");
+let runPollTimer = null;
+
+function setRunning(running) {
+  runBtn.disabled = running;
+  runBtn.classList.toggle("spinning", running);
+  runBtnLabel.textContent = running ? "Running…" : "Run now";
+}
+
+async function pollRunStatus() {
+  let status;
+  try {
+    status = await (await fetch("/api/run-status")).json();
+  } catch (e) {
+    return;
+  }
+  setRunning(status.running);
+  if (status.running) {
+    runPollTimer = setTimeout(pollRunStatus, 3000);
+    return;
+  }
+  clearTimeout(runPollTimer);
+  if (status.error) {
+    runError.textContent = "Run failed — check container logs.";
+  } else {
+    runError.textContent = "";
+    load();
+  }
+}
+
+runBtn.addEventListener("click", async () => {
+  runError.textContent = "";
+  setRunning(true);
+  let res;
+  try {
+    res = await fetch("/api/run", { method: "POST" });
+  } catch (e) {
+    setRunning(false);
+    runError.textContent = "Could not reach the server.";
+    return;
+  }
+  if (res.status === 409) {
+    // Already running (e.g. today's cron fired at the same time) — just poll.
+  } else if (!res.ok) {
+    setRunning(false);
+    runError.textContent = "Could not start the run.";
+    return;
+  }
+  pollRunStatus();
+});
+
+// If a run (manual or cron) is already in progress when the page loads,
+// reflect that instead of showing an idle "Run now" button.
+pollRunStatus();
 
 load();
 setInterval(load, 5 * 60 * 1000);

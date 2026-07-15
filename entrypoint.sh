@@ -60,11 +60,16 @@ export DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
 EOF
 chmod 600 /app/.env.runtime
 
-# Read-only dashboard, background process — best-effort: if it dies the
-# container keeps running since cron/coaching (the higher-priority function)
-# is unaffected. No process supervision added for one background process.
-gosu coach env HOME=/home/coach INFLUXDB_URL="${INFLUXDB_URL:-}" INFLUXDB_DB="${INFLUXDB_DB:-GarminStats}" \
+# Dashboard, background process — best-effort: if it dies the container keeps
+# running since cron/coaching (the higher-priority function) is unaffected.
+# No process supervision added for one background process. Needs the full
+# coach.py env (not just InfluxDB vars) because its "run now" button invokes
+# coach.py directly as a subprocess, inheriting this process's environment.
+gosu coach env HOME=/home/coach TMUX_TMPDIR="$TMUX_TMPDIR" \
+    INFLUXDB_URL="${INFLUXDB_URL:-}" INFLUXDB_DB="${INFLUXDB_DB:-GarminStats}" \
     WATCH_DEVICE="${WATCH_DEVICE:-fenix 8 - 47mm, AMOLED}" DASHBOARD_PORT="${DASHBOARD_PORT:-8420}" \
+    LANGUAGE="${LANGUAGE:-English}" LOCAL_TZ="${LOCAL_TZ:-Europe/Amsterdam}" \
+    DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}" \
     python3 /app/dashboard.py &
 
 # Install the cron schedule and run the daemon in the foreground so the

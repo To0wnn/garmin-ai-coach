@@ -58,7 +58,7 @@ own, every morning at 06:00 UTC (adjustable via `LOCAL_TZ`).
 - Takes sleep (hours + Garmin's sleep score), training load (ACWR + per-sport load ramp), HRV/resting-HR baseline deviation, recent training history (14 days), VO2max trend, heart-rate-zone intensity distribution (are easy days actually easy?), and whether you've already trained that day into account
 - Remembers its own past advice (persisted log) to stay consistent day to day instead of starting from zero every run
 - Evidence-based: every recommendation references a specific number, not vague statements
-- **Web dashboard** at `http://<host>:4874` (local network, read-only, no auth) — latest advice, advice history, metric charts, recent activities, and an adherence timeline showing how closely you followed each day's plan (color-coded per sport, comparing planned vs. actual duration/heart rate)
+- **Web dashboard** at `http://<host>:4874` (local network, no auth) — latest advice, advice history, metric charts, recent activities, and an adherence timeline showing how closely you followed each day's plan (color-coded per sport, comparing planned vs. actual duration/heart rate). A "Run now" button triggers an ad-hoc advice run on demand instead of waiting for the next scheduled cron run.
 
 ## How it works
 

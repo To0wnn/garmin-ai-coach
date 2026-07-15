@@ -1,2 +1,4 @@
 .env
 coach-home/
+__pycache__/
+*.pyc

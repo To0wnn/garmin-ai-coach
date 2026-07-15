@@ -517,10 +517,28 @@ def write_coach_log(advice: dict, weekly: bool):
         json.dump(entries, f, ensure_ascii=False)
 
 
+TIP_STRUCTURE = """TIP STRUCTURE — applies to run_tip, bike_tip, and to the weekly run_advice and bike_advice. Every one of these fields MUST follow this exact structure, in {LANGUAGE}:
+
+Write exactly two blocks separated by a single line break ("\\n"). No headers, no bullets, no bold.
+
+BLOCK 1 — THE CALL. One short sentence (max ~15 words). State the decision first, before any reasoning. Two allowed forms, nothing else:
+- Session advised: name the session type, duration, and intensity target, matching the run_target/bike_target numbers exactly. Example shape: "Easy run today: 40 min at HR 130-148."
+- No session advised: state that explicitly as a decision, optionally with the reason in three words. Example shape: "No second ride today — this morning covers it." Never skip Block 1 or replace it with reasoning when there is no session; "do nothing" is a call and must be stated as one.
+
+BLOCK 2 — THE WHY, then at most ONE watch-out. Two sentences maximum.
+- Sentence 1: the evidence for the call. Cite at most 3 concrete values from the data (dates, distances, HR, ACWR, HRV, zone percentages). Every value must come from the provided data — never invent numbers.
+- Sentence 2 (optional): exactly one forward-looking caveat or execution cue, also grounded in a real number. If you have nothing important, omit it. Never add a second caveat.
+
+HARD RULES:
+- The order is always: decision -> evidence -> caveat. Never open with a fact or reasoning ("You haven't run yet...", "Your ACWR is..."); open with what to do.
+- run_tip and bike_tip must be structurally parallel: same two-block shape, same sentence roles, so they read as one coach speaking.
+- Do not repeat a number already used in Block 1 inside Block 2 unless it adds new meaning.
+- Keep each full tip under 500 characters. Plain declarative sentences, no wordplay or idioms — the text must translate cleanly into any language."""
+
 JSON_SCHEMA_DAILY = """{
   "status": "<1 sentence: sleep/resting HR/body battery/training readiness score>",
-  "run_tip": "<1-2 sentences: concrete workout type (endurance/tempo/interval/recovery), duration, and intensity target (HR range or pace) — not just a HR zone>",
-  "bike_tip": "<1-2 sentences: concrete workout type (endurance/tempo/interval/recovery), duration, and intensity target (HR range) — not just a HR zone>",
+  "run_tip": "<follows TIP STRUCTURE above>",
+  "bike_tip": "<follows TIP STRUCTURE above>",
   "run_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no run session advised today>",
   "bike_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no bike session advised today>",
   "color": "green or yellow"
@@ -529,8 +547,8 @@ JSON_SCHEMA_DAILY = """{
 JSON_SCHEMA_WEEKLY = """{
   "performance": "<2-3 sentences overall weekly assessment, referencing the trend across recent_activities_14d, coach_log, vo2max, and intensity_distribution_7d/28d>",
   "recovery": "<2-3 sentences, explicitly mention the ACWR ratio and training_load_by_sport>",
-  "run_advice": "<2-3 sentences: concrete plan for the coming week (e.g. which days for intervals/tempo/long run vs. recovery), not just a single tip>",
-  "bike_advice": "<2-3 sentences: concrete plan for the coming week (e.g. which days for intervals/tempo/long ride vs. recovery), not just a single tip>",
+  "run_advice": "<follows TIP STRUCTURE above, applied to the coming week's plan instead of just today>",
+  "bike_advice": "<follows TIP STRUCTURE above, applied to the coming week's plan instead of just today>",
   "watch_point": "<1-2 sentences, or 'Nothing notable'>",
   "color": "green, orange or red"
 }"""
@@ -689,6 +707,8 @@ Your own advice from the last {LOG_HISTORY_DAYS} days (coach_log, oldest first):
 
 {context}
 {comparison_note}
+{TIP_STRUCTURE.format(LANGUAGE=LANGUAGE)}
+
 Respond with valid JSON per this schema. Write all text values in {LANGUAGE}, EXCEPT the
 "color" field — always keep that in English exactly as shown in the schema (green/yellow/
 orange/red), regardless of {LANGUAGE}:
