@@ -27,6 +27,7 @@ Fill in `.env`:
 - `DISCORD_WEBHOOK_URL` — Discord → Server Settings → Integrations → Webhooks → New Webhook → pick the channel → copy the URL.
 - `LANGUAGE` — the language the advice is written in (e.g. `English`, `Nederlands`, `Deutsch`, `Español`). Defaults to English.
 - `WATCH_DEVICE` — exact device name as it appears in your InfluxDB `Device` tag (e.g. `fenix 8 - 47mm, AMOLED`). Several fields are only reliable from the watch itself, not from paired sensors (HRM strap, bike computer) — set this if your device name differs from the default.
+- `DASHBOARD_PORT` — optional, defaults to `8420` (mapped to host port `4874`).
 - `CLAUDE_CODE_OAUTH_TOKEN` — generate with:
 
 ```bash
@@ -57,6 +58,7 @@ own, every morning at 06:00 UTC (adjustable via `LOCAL_TZ`).
 - Takes sleep (hours + Garmin's sleep score), training load (ACWR + per-sport load ramp), HRV/resting-HR baseline deviation, recent training history (14 days), VO2max trend, heart-rate-zone intensity distribution (are easy days actually easy?), and whether you've already trained that day into account
 - Remembers its own past advice (persisted log) to stay consistent day to day instead of starting from zero every run
 - Evidence-based: every recommendation references a specific number, not vague statements
+- **Web dashboard** at `http://<host>:4874` (local network, read-only, no auth) — latest advice, advice history, metric charts, recent activities, and an adherence timeline showing how closely you followed each day's plan (color-coded per sport, comparing planned vs. actual duration/heart rate)
 
 ## How it works
 
