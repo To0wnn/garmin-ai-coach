@@ -26,6 +26,7 @@ Fill in `.env`:
 - `INFLUXDB_URL` / `INFLUXDB_DB` — point these at your garmin-grafana InfluxDB.
 - `DISCORD_WEBHOOK_URL` — Discord → Server Settings → Integrations → Webhooks → New Webhook → pick the channel → copy the URL.
 - `LANGUAGE` — the language the advice is written in (e.g. `English`, `Nederlands`, `Deutsch`, `Español`). Defaults to English.
+- `WATCH_DEVICE` — exact device name as it appears in your InfluxDB `Device` tag (e.g. `fenix 8 - 47mm, AMOLED`). Several fields are only reliable from the watch itself, not from paired sensors (HRM strap, bike computer) — set this if your device name differs from the default.
 - `CLAUDE_CODE_OAUTH_TOKEN` — generate with:
 
 ```bash
@@ -53,7 +54,8 @@ own, every morning at 06:00 UTC (adjustable via `LOCAL_TZ`).
 
 - **Daily**: short status update + concrete advice per sport (workout type, duration, target heart rate/pace)
 - **Sunday**: in-depth weekly review with trend comparison (this week vs. last week vs. 4-week average)
-- Takes sleep, training load (ACWR), HRV/resting-HR baseline deviation, and whether you've already trained that day into account
+- Takes sleep (hours + Garmin's sleep score), training load (ACWR), HRV/resting-HR baseline deviation, recent training history (14 days), and whether you've already trained that day into account
+- Remembers its own past advice (persisted log) to stay consistent day to day instead of starting from zero every run
 - Evidence-based: every recommendation references a specific number, not vague statements
 
 ## How it works
