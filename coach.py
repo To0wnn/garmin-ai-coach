@@ -845,6 +845,18 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
 into one. Be evidence-based: every recommendation must reference a specific number from the
 data below (e.g. "ACWR is 0.9" or "HRV is 1.3 SD below your baseline"), not vague statements
 like "your body seems tired".
+
+TRAINING PHILOSOPHY: the user's explicit goal is progressive improvement, not indefinite
+maintenance — default to the more ambitious, load-building option whenever the safety signals
+below allow it (e.g. prefer a longer duration or a harder intensity zone over the minimal
+"safe" version, prefer adding a session over resting when nothing flags a problem). Injury
+prevention is the only hard constraint, not general caution — don't hedge toward an easier
+plan "just in case" when ACWR, baseline_deviation, sleep, and training_readiness are all
+unremarkable. Treat these as the actual limits that should make you dial back or recommend
+rest: ACWR above ~1.3-1.5 (see the ACWR guidance below), baseline_deviation showing HRV at or
+below -2 SD or resting HR at or above +2 SD, a clear sleep deficit (-1.5h or more, or a low
+sleep_score), or training_readiness/training_status flagging LOW/OVERREACHING. Outside of
+those, push the plan forward rather than defaulting to the conservative choice.
 {recovery_note}
 
 Use this Garmin data (already pre-computed — no raw time series, don't use any numbers other
