@@ -41,11 +41,18 @@
   }
 
   /* header */
-  header.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; gap: 16px; }
-  header.top h1 { font-size: 20px; font-weight: 650; margin: 0; display: flex; align-items: center; gap: 10px; }
-  header.top h1 .ic { width: 22px; height: 22px; color: var(--run); }
-  .top-right { display: flex; align-items: center; gap: 12px; }
+  header.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; gap: 16px; flex-wrap: wrap; }
+  header.top h1 { font-size: 20px; font-weight: 650; margin: 0; display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+  header.top h1 .ic { width: 22px; height: 22px; color: var(--run); flex: none; }
+  .top-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   #updated { font-size: 12px; color: var(--ink-3); }
+  @media (max-width: 560px) {
+    header.top h1 { font-size: 17px; }
+    .top-right { gap: 8px; width: 100%; justify-content: flex-end; }
+    #updated { display: none; }  /* redundant with the relative "as of" times already shown per-tile */
+    #run-btn-label, #logout-btn-label { display: none; }  /* icon-only on narrow screens — label still in the title attr */
+    #logout-btn { padding: 6px 8px; }
+  }
   #run-btn {
     display: inline-flex; align-items: center; gap: 6px;
     background: var(--surface); border: 1px solid var(--border); color: var(--ink);
@@ -316,6 +323,7 @@
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
     <symbol id="i-arrow-left" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></symbol>
   </svg>
 
   <div class="wrap" id="auth-screen" hidden style="max-width: 360px; padding-top: 96px;">
@@ -365,11 +373,14 @@
         <a id="settings-btn" href="/settings" title="Settings">
           <svg class="ic"><use href="#i-settings"/></svg>
         </a>
-        <button id="run-btn" type="button">
+        <button id="run-btn" type="button" title="Run now">
           <svg class="ic"><use href="#i-refresh"/></svg>
           <span id="run-btn-label">Run now</span>
         </button>
-        <button id="logout-btn" class="btn" type="button" title="Log out" style="font-size: 12px; padding: 6px 12px;">Log out</button>
+        <button id="logout-btn" class="btn" type="button" title="Log out" style="font-size: 12px; padding: 6px 12px; display: inline-flex; align-items: center; gap: 6px;">
+          <svg class="ic"><use href="#i-logout"/></svg>
+          <span id="logout-btn-label">Log out</span>
+        </button>
       </div>
     </header>
 
