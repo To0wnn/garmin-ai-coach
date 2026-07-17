@@ -4,6 +4,7 @@ advice, advice history, core metric charts, recent activities, and an
 adherence timeline (advice vs. what was actually done). Reuses coach.py's
 existing InfluxDB query functions and coach_log — no separate query layer."""
 
+import fcntl
 import json
 import os
 import subprocess
@@ -12,10 +13,11 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import chat_ask
 import coach
 import session_manager
 import settings as settings_module
-from providers import PROVIDERS
+from providers import PROVIDERS, get_provider
 
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8420"))
 HTML_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
@@ -32,6 +34,37 @@ COACH_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "coach.p
 # mid-conversation with.
 _run_lock = threading.Lock()
 _run_state = {"running": False, "error": None}
+
+# Chat is a SEPARATE lock from _run_lock, not the same one — a chat conversation
+# spans many turns over potentially minutes, while _run_lock is held only for one
+# whole coach.py run. Reusing _run_lock for chat would let a long-idle chat panel
+# block the daily cron indefinitely, which violates "cron/Run now always wins".
+# Instead: _chat_lock only ever protects ONE turn at a time (held just for the
+# duration of a single send_chat_message call), so cron/Run now only ever has to
+# wait out a single short chat reply, never a whole conversation. Cross-process
+# preemption against cron itself (which runs outside this process, via
+# cron_daily.sh) is handled separately in chat_ask's use of coach.py's own
+# /tmp/coach.lock — see _handle_chat_message below.
+_chat_lock = threading.Lock()
+
+
+def _try_coach_lock():
+    """Non-blocking attempt at the SAME cross-process lock coach.py itself takes
+    (see coach.py's LOCK_FILE/fcntl.flock in its __main__ block) — held only for
+    the duration of one chat turn, then released immediately. This is what lets
+    the daily cron run (a separate OS process, invoked via cron_daily.sh, outside
+    this dashboard.py process entirely) safely preempt chat: cron's own flock
+    attempt will succeed the moment a chat turn finishes and releases this file,
+    without any explicit signal between the two processes. Returns an open file
+    handle (caller must unlock+close it) on success, or None if coach.py is
+    currently running."""
+    fd = open(coach.LOCK_FILE, "w")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fd.close()
+        return None
+    return fd
 
 
 def _run_coach_background():
@@ -99,6 +132,10 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_login_code()
         elif self.path == "/api/logout":
             self._handle_logout()
+        elif self.path == "/api/chat/start":
+            self._handle_chat_start()
+        elif self.path == "/api/chat/message":
+            self._handle_chat_message()
         else:
             self.send_error(404)
 
@@ -140,7 +177,13 @@ class Handler(BaseHTTPRequestHandler):
             if _run_lock.locked() or _run_state["running"]:
                 self._send_json({"saved": False, "reason": "a run is in progress, try again shortly"}, status=409)
                 return
-            session_result = session_manager.start_session(updated["provider"])
+            if not _chat_lock.acquire(blocking=False):
+                self._send_json({"saved": False, "reason": "a chat message is in flight, try again shortly"}, status=409)
+                return
+            try:
+                session_result = session_manager.start_session(updated["provider"])
+            finally:
+                _chat_lock.release()
 
         self._send_json({"saved": True, "settings": updated, "session": session_result})
 
@@ -161,12 +204,82 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"logged_in": session_manager.is_logged_in(provider)})
 
     def _handle_logout(self):
+        # logout() calls session_manager.start_session() (kill-session + new-session +
+        # up to READY_TIMEOUT_SECONDS of polling) same as a provider switch below — needs
+        # the same guards, otherwise a concurrent "Run now"/chat turn/Save-provider-switch
+        # can race it: two start_session() calls stepping on each other (one's kill-session
+        # landing mid-poll of the other's freshly started session) is what actually caused
+        # logout to need a second click/Save to "unstick" — not just slow timing.
         if _run_lock.locked() or _run_state["running"]:
             self._send_json({"logged_out": False, "reason": "a run is in progress, try again shortly"}, status=409)
             return
-        provider = settings_module.read_settings()["provider"]
-        session_manager.logout(provider)
+        if not _chat_lock.acquire(blocking=False):
+            self._send_json({"logged_out": False, "reason": "a chat message is in flight, try again shortly"}, status=409)
+            return
+        try:
+            provider = settings_module.read_settings()["provider"]
+            session_manager.logout(provider)
+        finally:
+            _chat_lock.release()
         self._send_json({"logged_out": True})
+
+    def _handle_chat_start(self):
+        if _run_lock.locked() or _run_state["running"]:
+            self._send_json({"started": False, "reason": "a scheduled run is in progress, try again shortly"}, status=409)
+            return
+        if not _chat_lock.acquire(blocking=False):
+            self._send_json({"started": False, "reason": "a chat message is already in flight"}, status=409)
+            return
+        try:
+            lock_fd = _try_coach_lock()
+            if lock_fd is None:
+                self._send_json({"started": False, "reason": "a scheduled run is in progress, try again shortly"}, status=409)
+                return
+            try:
+                chat_ask.start_chat()
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+        except Exception as e:
+            self._send_json({"started": False, "reason": str(e)}, status=502)
+            return
+        finally:
+            _chat_lock.release()
+        self._send_json({"started": True})
+
+    def _handle_chat_message(self):
+        body = self._read_json_body()
+        message = (body.get("message") or "").strip()
+        first = bool(body.get("first"))
+        if not message:
+            self._send_json({"error": "no message provided"}, status=400)
+            return
+
+        if _run_lock.locked() or _run_state["running"]:
+            self._send_json({"reply": None, "paused": True, "reason": "a scheduled run is in progress"}, status=409)
+            return
+        if not _chat_lock.acquire(blocking=False):
+            self._send_json({"reply": None, "paused": False, "reason": "a chat message is already in flight"}, status=409)
+            return
+        try:
+            lock_fd = _try_coach_lock()
+            if lock_fd is None:
+                self._send_json({"reply": None, "paused": True, "reason": "a scheduled run is in progress"}, status=409)
+                return
+            try:
+                prompt = f"{coach.build_chat_context()}\n\nThe user asks: {message}" if first else message
+                provider = settings_module.read_settings()["provider"]
+                write_tool_name = get_provider(provider)["write_tool_name"]
+                reply = chat_ask.send_chat_message(prompt, write_tool_name)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+        except Exception as e:
+            self._send_json({"reply": None, "paused": False, "reason": str(e)}, status=502)
+            return
+        finally:
+            _chat_lock.release()
+        self._send_json({"reply": reply, "paused": False})
 
     def _serve_html(self):
         with open(HTML_FILE, "rb") as f:

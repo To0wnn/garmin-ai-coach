@@ -883,6 +883,24 @@ Write ONLY the JSON (nothing else, no explanation, no markdown code block) to th
 {OUTPUT_FILE} using the {get_provider(PROVIDER)["write_tool_name"]} tool. Then give a brief confirmation in the chat."""
 
 
+def build_chat_context() -> str:
+    """Metrics + coach_log JSON blob injected into the first message of a new
+    dashboard chat conversation, so the user can ask "why?"-style follow-up
+    questions without re-pasting their own data. Reuses the same build_metrics()/
+    read_coach_log() the daily prompt and dashboard.py's /api/data already call —
+    no separate query layer for chat."""
+    metrics = json.dumps(build_metrics(), indent=2, ensure_ascii=False)
+    log = json.dumps(read_coach_log(), indent=2, ensure_ascii=False)
+    return f"""Here is the user's current training data (for your reference — refer to
+concrete numbers from it when relevant, same as your daily advice):
+
+{metrics}
+
+Your own recent advice history:
+
+{log}"""
+
+
 def call_claude(prompt: str) -> dict:
     """Sends the prompt to the permanent 'coach' tmux session (running whichever
     provider is selected — see providers.py) instead of spawning a fresh

@@ -60,13 +60,8 @@ def _clear_session():
     _tmux("send-keys", "-t", SESSION, "Enter")
 
 
-def ask_and_wait_for_file(prompt: str, output_file: str):
-    if os.path.exists(output_file):
-        os.remove(output_file)
-
-    _send_literal_and_enter(prompt)
-
-    deadline = time.time() + MAX_WAIT_SECONDS
+def _wait_for_stable_file(output_file: str, max_wait_seconds: int):
+    deadline = time.time() + max_wait_seconds
     last_size = -1
     stable_count = 0
     while time.time() < deadline:
@@ -77,7 +72,6 @@ def ask_and_wait_for_file(prompt: str, output_file: str):
         if size > 0 and size == last_size:
             stable_count += 1
             if stable_count >= FILE_STABLE_POLLS:
-                _clear_session()
                 return
         else:
             stable_count = 0
@@ -88,8 +82,30 @@ def ask_and_wait_for_file(prompt: str, output_file: str):
     # rather than as a clean next turn. Leave the session as-is; the next
     # call's _send_literal_and_enter will queue behind whatever's still
     # running, and a stale leftover file (if one eventually appears) is
-    # removed at the top of the next ask_and_wait_for_file call.
-    raise TimeoutError(f"No (stable) answer file within {MAX_WAIT_SECONDS}s: {output_file}")
+    # removed at the top of the next ask-and-wait call.
+    raise TimeoutError(f"No (stable) answer file within {max_wait_seconds}s: {output_file}")
+
+
+def ask_and_wait_for_file(prompt: str, output_file: str):
+    """One-shot: sends prompt, waits for the answer file, then /clear's the
+    session so the NEXT call starts with a clean slate. Used by coach.py's
+    daily/weekly advice generation, where each run is independent."""
+    if os.path.exists(output_file):
+        os.remove(output_file)
+    _send_literal_and_enter(prompt)
+    _wait_for_stable_file(output_file, MAX_WAIT_SECONDS)
+    _clear_session()
+
+
+def ask_and_wait_for_file_no_clear(prompt: str, output_file: str, max_wait_seconds: int = MAX_WAIT_SECONDS):
+    """Same as ask_and_wait_for_file but leaves the session's context intact
+    afterward — used by chat_ask.py so a multi-turn conversation can build on
+    earlier turns. Caller is responsible for clearing the session explicitly
+    when a conversation starts (see chat_ask.start_chat)."""
+    if os.path.exists(output_file):
+        os.remove(output_file)
+    _send_literal_and_enter(prompt)
+    _wait_for_stable_file(output_file, max_wait_seconds)
 
 
 if __name__ == "__main__":
