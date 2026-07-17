@@ -5,8 +5,15 @@
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl python3 ca-certificates gnupg tmux cron gosu && \
+    curl python3 python3-pip ca-certificates gnupg tmux cron gosu && \
     rm -rf /var/lib/apt/lists/*
+
+# python-garminconnect (own Garmin Connect integration, replacing garmin-grafana) —
+# trixie's system Python is PEP-668-protected ("externally-managed-environment"),
+# so --break-system-packages is required. No venv: this container runs nothing else
+# on this Python, and the project's existing convention is stdlib/system-Python
+# throughout (no requirements.txt, no venv infrastructure) — consistent with that.
+RUN pip3 install --break-system-packages --no-cache-dir garminconnect==0.3.6
 
 # Debian trixie's own nodejs/npm packages are Node 20, which npm flags as below
 # @anthropic-ai/claude-code's required engine (>=22) — NodeSource's setup script
@@ -23,7 +30,13 @@ RUN npm install -g @anthropic-ai/claude-code
 # Antigravity CLI (agy) heeft geen root-restrictie (empirisch geverifieerd), maar
 # dezelfde non-root user wordt ook daarvoor gebruikt: simpeler dan providers
 # verschillend te behandelen, en install.sh installeert toch al naar $HOME/.local/bin.
-RUN useradd -m -s /bin/sh coach
+# UID/GID EXPLICIET vastgepind op 1001 — de bookworm-basis (node:lts-slim) gaf coach
+# toevallig UID 1001, en het bestaande coach-home-volume (tokens, coach_log,
+# settings) is op die UID geschreven. Zonder deze pin geeft useradd op een nieuwe
+# basis-image (bijv. deze overstap naar debian:trixie-slim) een andere UID (1000),
+# waardoor de coach-user het bestaande volume niet meer kan lezen/schrijven —
+# precies dit gebeurde bij de trixie-overstap (PermissionError op ~/.claude.json).
+RUN useradd -u 1001 -m -s /bin/sh coach
 
 # Antigravity CLI: geen npm-package (Gemini CLI's opvolger na het stopzetten van
 # de gratis individuele OAuth-login, juni 2026) — een los Go-binary via installer-script,
@@ -39,6 +52,8 @@ COPY session_manager.py /app/session_manager.py
 COPY providers.py /app/providers.py
 COPY settings.py /app/settings.py
 COPY chat_ask.py /app/chat_ask.py
+COPY db.py /app/db.py
+COPY garmin_client.py /app/garmin_client.py
 COPY dashboard.py /app/dashboard.py
 COPY dashboard.html /app/dashboard.html
 COPY entrypoint.sh /app/entrypoint.sh
