@@ -291,12 +291,47 @@
     <symbol id="i-send" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
   </svg>
 
-  <div class="wrap">
+  <div class="wrap" id="auth-screen" hidden style="max-width: 360px; padding-top: 96px;">
+    <h1 style="margin-bottom: 24px;"><svg class="ic"><use href="#i-activity"/></svg> Garmin AI Coach</h1>
+    <div class="card" id="login-card">
+      <h2>Log in</h2>
+      <div class="field-row">
+        <label for="login-username">Username</label>
+        <input id="login-username" type="text" autocomplete="username">
+      </div>
+      <div class="field-row">
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" autocomplete="current-password">
+      </div>
+      <div class="settings-msg" id="login-msg"></div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="login-btn" type="button">Log in</button>
+      </div>
+    </div>
+    <div class="card" id="register-card" hidden>
+      <h2>Set up your account</h2>
+      <div class="field-row">
+        <label for="register-username">Username</label>
+        <input id="register-username" type="text" autocomplete="username">
+      </div>
+      <div class="field-row">
+        <label for="register-password">Password</label>
+        <input id="register-password" type="password" autocomplete="new-password">
+      </div>
+      <div class="settings-msg" id="register-msg"></div>
+      <div class="modal-actions">
+        <button class="btn btn-primary" id="register-btn" type="button">Create account</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap" id="main-wrap" hidden>
     <header class="top">
       <h1><svg class="ic"><use href="#i-activity"/></svg> Garmin AI Coach</h1>
       <div class="top-right">
         <span id="run-error"></span>
         <span id="updated"></span>
+        <span id="whoami" style="color: var(--ink-3); font-size: 12px;"></span>
         <button id="chat-btn" type="button" title="Ask the coach">
           <svg class="ic"><use href="#i-chat"/></svg>
         </button>
@@ -307,6 +342,7 @@
           <svg class="ic"><use href="#i-refresh"/></svg>
           <span id="run-btn-label">Run now</span>
         </button>
+        <button id="logout-btn" class="btn" type="button" title="Log out" style="font-size: 12px; padding: 6px 12px;">Log out</button>
       </div>
     </header>
 
@@ -1600,8 +1636,104 @@ async function pollBackfillStatus() {
   }
 }
 
-load();
-setInterval(load, 5 * 60 * 1000);
+// ---------- auth bootstrap ----------
+const authScreen = $("#auth-screen");
+const mainWrap = $("#main-wrap");
+const loginCard = $("#login-card");
+const registerCard = $("#register-card");
+
+function inviteTokenFromPath() {
+  const m = window.location.pathname.match(/^\/register\/(.+)$/);
+  return m ? m[1] : null;
+}
+
+async function boot() {
+  let who;
+  try {
+    who = await (await fetch("/api/whoami")).json();
+  } catch (e) {
+    who = { logged_in: false };
+  }
+  const inviteToken = inviteTokenFromPath();
+  if (who.logged_in && !inviteToken) {
+    authScreen.hidden = true;
+    mainWrap.hidden = false;
+    $("#whoami").textContent = who.username + (who.is_admin ? " (admin)" : "");
+    load();
+    setInterval(load, 5 * 60 * 1000);
+    return;
+  }
+  authScreen.hidden = false;
+  mainWrap.hidden = true;
+  if (inviteToken) {
+    loginCard.hidden = true;
+    registerCard.hidden = false;
+  } else {
+    loginCard.hidden = false;
+    registerCard.hidden = true;
+  }
+}
+
+$("#login-btn").addEventListener("click", async () => {
+  const msg = $("#login-msg");
+  msg.textContent = "";
+  try {
+    const res = await fetch("/api/dashboard-login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: $("#login-username").value, password: $("#login-password").value }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.logged_in) {
+      msg.textContent = data.reason || "Login failed.";
+      msg.className = "settings-msg err";
+      return;
+    }
+    window.location.href = "/";
+  } catch (e) {
+    msg.textContent = "Could not reach the server.";
+    msg.className = "settings-msg err";
+  }
+});
+$("#login-password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#login-btn").click(); });
+
+$("#register-btn").addEventListener("click", async () => {
+  const msg = $("#register-msg");
+  msg.textContent = "";
+  try {
+    const res = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        invite_token: inviteTokenFromPath(),
+        username: $("#register-username").value,
+        password: $("#register-password").value,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.registered) {
+      msg.textContent = data.reason || "Could not create account.";
+      msg.className = "settings-msg err";
+      return;
+    }
+    window.location.href = "/";
+  } catch (e) {
+    msg.textContent = "Could not reach the server.";
+    msg.className = "settings-msg err";
+  }
+});
+$("#register-password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#register-btn").click(); });
+
+$("#logout-btn").addEventListener("click", async () => {
+  try {
+    await fetch("/api/dashboard-logout", { method: "POST" });
+  } catch (e) {
+    // ignore — reload anyway, worst case the cookie is still set and boot() re-shows the dashboard
+  }
+  window.location.href = "/";
+});
+
+boot();
 </script>
 </body>
 </html>

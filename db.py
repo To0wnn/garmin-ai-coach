@@ -20,18 +20,21 @@ DB_FILE = os.path.expanduser("~/coach.db")
 # if a column mapping turns out wrong the first time).
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS daily_summary (
-    date TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
     resting_hr INTEGER,
     steps INTEGER,
     stress_avg REAL,
     bb_high INTEGER,
     bb_low INTEGER,
     synced_at TEXT,
-    raw_json TEXT
+    raw_json TEXT,
+    PRIMARY KEY (user_id, date)
 );
 
 CREATE TABLE IF NOT EXISTS sleep (
-    date TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
     sleep_seconds INTEGER,
     sleep_score INTEGER,
     deep_s INTEGER,
@@ -39,14 +42,16 @@ CREATE TABLE IF NOT EXISTS sleep (
     rem_s INTEGER,
     awake_s INTEGER,
     synced_at TEXT,
-    raw_json TEXT
+    raw_json TEXT,
+    PRIMARY KEY (user_id, date)
 );
 
 -- Column names follow get_hrv_data()'s real hrvSummary.baseline shape (verified
 -- against a live response): balancedLow/balancedUpper is the BALANCED band Garmin
 -- itself uses for the "BALANCED" status; lowUpper is a separate, lower cutoff.
 CREATE TABLE IF NOT EXISTS hrv (
-    date TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
     last_night_avg INTEGER,
     weekly_avg INTEGER,
     status TEXT,
@@ -54,11 +59,13 @@ CREATE TABLE IF NOT EXISTS hrv (
     baseline_balanced_low INTEGER,
     baseline_balanced_upper INTEGER,
     synced_at TEXT,
-    raw_json TEXT
+    raw_json TEXT,
+    PRIMARY KEY (user_id, date)
 );
 
 CREATE TABLE IF NOT EXISTS training_readiness (
-    date TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
     score INTEGER,
     level TEXT,
     acute_load INTEGER,
@@ -70,48 +77,65 @@ CREATE TABLE IF NOT EXISTS training_readiness (
     factor_acwr INTEGER,
     factor_stress_history INTEGER,
     synced_at TEXT,
-    raw_json TEXT
+    raw_json TEXT,
+    PRIMARY KEY (user_id, date)
 );
 
 CREATE TABLE IF NOT EXISTS training_status (
-    date TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
     status_phrase TEXT,
     acwr REAL,
     acute_load REAL,
     chronic_load REAL,
     synced_at TEXT,
-    raw_json TEXT
+    raw_json TEXT,
+    PRIMARY KEY (user_id, date)
 );
 
 CREATE TABLE IF NOT EXISTS lactate_threshold (
-    date TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
     hr_threshold_running INTEGER,
     speed_threshold_sec_per_m REAL,
     synced_at TEXT,
-    raw_json TEXT
+    raw_json TEXT,
+    PRIMARY KEY (user_id, date)
 );
 
+-- vo2max_run/vo2max_cycle are Garmin's rounded whole-number vo2MaxValue; the
+-- _precise columns are vo2MaxPreciseValue (e.g. 51.5 vs. the rounded 51.0) —
+-- Garmin's API genuinely returns both, not a derived/computed distinction.
 CREATE TABLE IF NOT EXISTS max_metrics (
-    date TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
     vo2max_run REAL,
+    vo2max_run_precise REAL,
     vo2max_cycle REAL,
+    vo2max_cycle_precise REAL,
     synced_at TEXT,
-    raw_json TEXT
+    raw_json TEXT,
+    PRIMARY KEY (user_id, date)
 );
 
 CREATE TABLE IF NOT EXISTS ftp (
-    date TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
     garmin_ftp_watts INTEGER,
     synced_at TEXT,
-    raw_json TEXT
+    raw_json TEXT,
+    PRIMARY KEY (user_id, date)
 );
 
--- activity_id is Garmin's own ID: a real uniqueness constraint, replacing the old
--- InfluxDB-era client-side time+type+name+distance dedup hack (garmin-fetch-data
--- could write the same activity twice on re-sync — an upsert here makes re-syncing
--- inherently idempotent instead).
+-- activity_id is Garmin's own ID, unique per Garmin account — combined with user_id
+-- it stays a real uniqueness constraint (replacing the old InfluxDB-era client-side
+-- time+type+name+distance dedup hack) even though two different users' Garmin
+-- accounts could in principle both have an activity_id 1 (unlikely, Garmin's ids
+-- are large/effectively global, but user_id in the key costs nothing and removes
+-- the assumption entirely).
 CREATE TABLE IF NOT EXISTS activities (
-    activity_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    activity_id INTEGER NOT NULL,
     date TEXT NOT NULL,
     start_utc TEXT,
     start_local TEXT,
@@ -133,47 +157,118 @@ CREATE TABLE IF NOT EXISTS activities (
     avg_power REAL,
     vo2max REAL,
     synced_at TEXT,
-    raw_json TEXT
+    raw_json TEXT,
+    PRIMARY KEY (user_id, activity_id)
 );
-CREATE INDEX IF NOT EXISTS idx_activities_date ON activities(date);
-CREATE INDEX IF NOT EXISTS idx_activities_type_date ON activities(type, date);
+CREATE INDEX IF NOT EXISTS idx_activities_date ON activities(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_activities_type_date ON activities(user_id, type, date);
 
 -- get_activity_splits()'s lapDTOs carry no per-lap sport/type field (verified
 -- against a real response) — sport is looked up via activity_id -> activities.type
 -- when needed (e.g. filtering for cycling laps), not duplicated onto every lap row.
 CREATE TABLE IF NOT EXISTS activity_laps (
+    user_id INTEGER NOT NULL,
     activity_id INTEGER NOT NULL,
     lap_idx INTEGER NOT NULL,
     duration_s INTEGER,
     avg_power REAL,
     avg_hr INTEGER,
-    PRIMARY KEY (activity_id, lap_idx)
+    PRIMARY KEY (user_id, activity_id, lap_idx)
 );
 
 CREATE TABLE IF NOT EXISTS bb_intraday (
-    ts INTEGER PRIMARY KEY,
-    level INTEGER
+    user_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    level INTEGER,
+    PRIMARY KEY (user_id, ts)
 ) WITHOUT ROWID;
 
 CREATE TABLE IF NOT EXISTS hrv_intraday (
-    ts INTEGER PRIMARY KEY,
-    hrv_value REAL
+    user_id INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    hrv_value REAL,
+    PRIMARY KEY (user_id, ts)
 ) WITHOUT ROWID;
 
 -- garmin_token, backfill checkpoint/progress, last_sync_at, etc. — one place for
--- all sync-process state, avoiding a proliferation of small JSON files.
+-- all sync-process state, avoiding a proliferation of small JSON files. user_id=0
+-- is reserved for state that predates/isn't scoped to any user (none currently).
 CREATE TABLE IF NOT EXISTS sync_state (
-    key TEXT PRIMARY KEY,
-    value TEXT
+    user_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT,
+    PRIMARY KEY (user_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS sync_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
     started_at TEXT,
     ended_at TEXT,
     kind TEXT,
     days_processed INTEGER,
     errors TEXT
+);
+
+-- Per-user dashboard/coach settings (language, timezone, watch device, Discord
+-- webhook, daily advice time). Replaces the old single flat coach_settings.json —
+-- reuses upsert()/query() exactly like sync_state already does, one row per
+-- (user_id, key) so new setting keys need no schema migration to add.
+CREATE TABLE IF NOT EXISTS settings (
+    user_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT,
+    PRIMARY KEY (user_id, key)
+);
+
+-- Multi-user support (Stage 1 of the multi-user plan). session_owner_id defaults
+-- to the user's own id at registration (own AI session); it's repointed at
+-- another user's id when a share code is redeemed, so "whose tmux pane/lock/
+-- output-file does this user's prompt use" is a lookup, not the user's own id.
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    session_owner_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+-- Admin-generated, single-use, one per invitee — redeeming creates the account.
+CREATE TABLE IF NOT EXISTS invites (
+    token TEXT PRIMARY KEY,
+    created_by_user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_by_user_id INTEGER,
+    used_at TEXT
+);
+
+-- Reusable until revoked (owner can share the same code with several people) —
+-- redeeming sets the borrower's users.session_owner_id to owner_user_id.
+CREATE TABLE IF NOT EXISTS share_codes (
+    code TEXT PRIMARY KEY,
+    owner_user_id INTEGER NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+-- Who is currently borrowing a share code, for attribution/per-borrower revoke
+-- without needing a separate code per person.
+CREATE TABLE IF NOT EXISTS session_shares (
+    code TEXT NOT NULL,
+    borrower_user_id INTEGER NOT NULL,
+    redeemed_at TEXT NOT NULL,
+    PRIMARY KEY (code, borrower_user_id)
 );
 """
 
@@ -246,15 +341,26 @@ def upsert(table: str, key_cols: list[str], row: dict):
         conn.close()
 
 
-def get_sync_state(key: str, default=None):
-    rows = query("SELECT value FROM sync_state WHERE key = ?", (key,))
+def get_sync_state(user_id: int, key: str, default=None):
+    rows = query("SELECT value FROM sync_state WHERE user_id = ? AND key = ?", (user_id, key))
     if not rows:
         return default
     return json.loads(rows[0]["value"])
 
 
-def set_sync_state(key: str, value):
-    upsert("sync_state", ["key"], {"key": key, "value": json.dumps(value)})
+def set_sync_state(user_id: int, key: str, value):
+    upsert("sync_state", ["user_id", "key"], {"user_id": user_id, "key": key, "value": json.dumps(value)})
+
+
+def get_setting(user_id: int, key: str, default=None):
+    rows = query("SELECT value FROM settings WHERE user_id = ? AND key = ?", (user_id, key))
+    if not rows:
+        return default
+    return json.loads(rows[0]["value"])
+
+
+def set_setting(user_id: int, key: str, value):
+    upsert("settings", ["user_id", "key"], {"user_id": user_id, "key": key, "value": json.dumps(value)})
 
 
 if __name__ == "__main__":

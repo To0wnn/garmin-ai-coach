@@ -47,6 +47,11 @@ USER root
 
 WORKDIR /app
 COPY coach.py /app/coach.py
+COPY coach_sqlite.py /app/coach_sqlite.py
+COPY build_metrics_sqlite.py /app/build_metrics_sqlite.py
+COPY auth.py /app/auth.py
+COPY cron_dispatch.py /app/cron_dispatch.py
+COPY migrate_to_multiuser.py /app/migrate_to_multiuser.py
 COPY session_ask.py /app/session_ask.py
 COPY session_manager.py /app/session_manager.py
 COPY providers.py /app/providers.py

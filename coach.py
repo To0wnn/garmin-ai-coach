@@ -1,53 +1,68 @@
 #!/usr/bin/env python3
-"""Garmin AI coach: queries InfluxDB, aggregates metrics, asks Claude Code for
-advice, posts the result to Discord. Runs daily; on Sundays does a full weekly
-review instead of the short daily check-in."""
+"""Shared logic for garmin-ai-coach's advice pipeline: prompt text, Discord
+embed/posting, coach_log persistence, and adherence scoring — all pure
+functions of their arguments, with no data-source dependency. The actual
+metrics query layer lives in build_metrics_sqlite.py (SQLite-backed);
+coach_sqlite.py is the real entry point that ties this module's prompt/
+Discord/logging logic together with that query layer.
 
-import fcntl
+InfluxDB is gone from this file (finished as part of the multi-user work —
+see the migration plan's Stage 5): every function here now runs regardless
+of which user it's called for, with no InfluxDB env vars, connections, or
+per-device filtering left. That query logic lived here only while coach.py
+itself was still the production entry point during the InfluxDB->SQLite
+migration's Stage 6 soak period; coach_sqlite.py has been the sole live path
+since the cutover, so the InfluxDB-only functions (build_metrics,
+_activities_since, daily_stats_window, etc.) were dead code kept around
+only for reference — removed outright rather than carried into the
+multi-user world, where they'd be meaningless anyway (no InfluxDB data
+exists for a newly registered user)."""
+
 import json
 import os
-import sys
-import time
-import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import settings as _settings
 from providers import get_provider
 
-_SETTINGS = _settings.read_settings()
+# TEMPORARY: user_id hardcoded to 1 (the pre-existing single user) until a
+# real CoachContext replaces these process-global constants with per-user
+# values read per-invocation — see the multi-user plan. Not done in this pass
+# to avoid conflating "remove dead InfluxDB code" with "rewrite the settings
+# model" in one diff.
+_SETTINGS = _settings.read_settings(1)
 
-INFLUXDB_URL = os.environ["INFLUXDB_URL"]  # e.g. http://172.17.0.1:8187
-INFLUXDB_DB = os.environ.get("INFLUXDB_DB", "GarminStats")
-# Dashboard-editable (settings.py / ~/coach_settings.json) — not read from .env
-# directly anymore, so a provider/language/watch-device/webhook change on the
-# settings page takes effect on the next run without a container restart.
+# Dashboard-editable (settings.py / coach.db's settings table) — not read
+# from .env directly anymore, so a provider/language/watch-device/webhook
+# change on the settings page takes effect on the next run without a
+# container restart.
+# per-user instead of process-global; not done in this pass to avoid
+# conflating "remove dead InfluxDB code" with "rewrite the settings model" in
+# one diff.
 PROVIDER = _SETTINGS["provider"]
 LANGUAGE = _SETTINGS["language"]  # e.g. English, Nederlands, Deutsch
 DISCORD_WEBHOOK_URL = _SETTINGS["discord_webhook_url"]
-# DailyStats/SleepSummary carry a per-device tag (watch, HRM strap, bike computer,
-# speed sensor) — several fields (totalSteps, stressPercentage) are only meaningful
-# from the watch itself and silently wrong from other devices (e.g. a chest strap
-# reporting 227 steps vs. the watch's 1790 for the same day). Filtering on this
-# pins those queries to the one full/reliable source.
 WATCH_DEVICE = _SETTINGS["watch_device"]
 LOCAL_TZ = ZoneInfo(_SETTINGS["local_tz"])
 NOW_LOCAL = datetime.now(LOCAL_TZ)
 IS_WEEKLY = NOW_LOCAL.weekday() == 6  # Sunday, in lokale tijd
-STALE_AFTER_HOURS = 36
-OUTPUT_FILE = "/app/output/advies.json"
-# The daily cron run and a manual "run now" dashboard click both ultimately talk
-# to the same single tmux/claude session — an overlap sends two prompts before
-# either gets an Enter, which Claude Code's TUI shows as two separate, never-
-# submitted "[Pasted text #N]" placeholders (a real incident, not hypothetical).
-# A cross-process file lock (not dashboard.py's in-process threading.Lock, which
-# only protects against overlaps within that one process) closes this regardless
-# of which of the two entry points is running.
-LOCK_FILE = "/tmp/coach.lock"
-# Persisted on the coach-home volume so it survives container restarts/rebuilds.
-LOG_FILE = os.path.expanduser("~/coach_log.json")
 LOG_HISTORY_DAYS = 14
+
+
+def owner_log_file(user_id: int) -> str:
+    """Per-user coach_log.json path — the coach's own advice-history file
+    must not be shared between users (each user gets their own advice, own
+    history, own adherence tracking). Persisted under ~/users/<id>/ on the
+    coach-home volume so it survives container restarts/rebuilds. Named
+    owner_log_file for consistency with owner_output_file/owner_lock_file,
+    though it's keyed by user_id specifically (not the effective AI-session
+    owner) — advice history belongs to the user who received it, regardless
+    of whose AI session generated it."""
+    path = os.path.expanduser(f"~/users/{user_id}")
+    os.makedirs(path, exist_ok=True)
+    return os.path.join(path, "coach_log.json")
 
 SPORT_TYPES = {
     "running": ["running"],
@@ -55,307 +70,19 @@ SPORT_TYPES = {
 }
 
 
-def local_midnight_utc(days_ago: int = 0) -> datetime:
-    """Midnight in the local timezone, N days ago, converted to UTC."""
-    midnight_local = NOW_LOCAL.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_ago)
-    return midnight_local.astimezone(timezone.utc)
+def owner_output_file(owner_id: int) -> str:
+    """Per-AI-session-owner output file (see the multi-user plan's sharing
+    model) — two owners' independent sessions writing/reading concurrently
+    must not collide."""
+    return f"/app/output/{owner_id}/advies.json"
 
 
-def influx_query(q: str) -> list[dict]:
-    params = urllib.parse.urlencode({"db": INFLUXDB_DB, "q": q})
-    with urllib.request.urlopen(f"{INFLUXDB_URL}/query?{params}", timeout=15) as resp:
-        data = json.load(resp)
-    result = data.get("results", [{}])[0]
-    if "error" in result:
-        raise RuntimeError(f"InfluxDB query error: {result['error']} (query: {q})")
-    series = result.get("series")
-    if not series:
-        return []
-    cols = series[0]["columns"]
-    return [dict(zip(cols, row)) for row in series[0]["values"]]
-
-
-def avg(rows: list[dict], field: str) -> float | None:
-    vals = [r[field] for r in rows if r.get(field) is not None]
-    return round(sum(vals) / len(vals), 1) if vals else None
-
-
-def latest(measurement: str) -> dict:
-    """Most recent data point, with a staleness flag so the prompt knows whether
-    the data is still fresh enough to rely on."""
-    rows = influx_query(f'SELECT * FROM "{measurement}" ORDER BY time DESC LIMIT 1')
-    if not rows:
-        return {"available": False}
-    row = rows[0]
-    ts = datetime.fromisoformat(row["time"].replace("Z", "+00:00"))
-    age_hours = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
-    row["_stale"] = age_hours > STALE_AFTER_HOURS
-    row["_age_hours"] = round(age_hours, 1)
-    return row
-
-
-def daily_stats_window(days_back: int, window_days: int) -> list[dict]:
-    end = local_midnight_utc(days_back)
-    start = local_midnight_utc(days_back + window_days)
-    q = (
-        f'SELECT restingHeartRate, totalSteps, stressPercentage, '
-        f'bodyBatteryHighestValue, bodyBatteryLowestValue '
-        f'FROM "DailyStats" WHERE time >= \'{start.isoformat()}\' AND time < \'{end.isoformat()}\' '
-        f'AND "Device" = \'{WATCH_DEVICE}\' ORDER BY time DESC'
-    )
-    return influx_query(q)
-
-
-def sleep_summary_window(days_back: int, window_days: int) -> list[dict]:
-    """DailyStats.sleepingSeconds turned out to be unreliable (seen 5.7h on a
-    night the Garmin app reported 7.5h/score 85) — SleepSummary.sleepTimeSeconds
-    matches the app and comes with sleepScore, so use that instead. Its
-    timestamp lands in the morning after the tracked night (once the watch
-    finishes processing), not at local midnight, but still within the same
-    local calendar day's window."""
-    end = local_midnight_utc(days_back)
-    start = local_midnight_utc(days_back + window_days)
-    q = (
-        f'SELECT sleepTimeSeconds, sleepScore '
-        f'FROM "SleepSummary" WHERE time >= \'{start.isoformat()}\' AND time < \'{end.isoformat()}\' '
-        f'AND "Device" = \'{WATCH_DEVICE}\' ORDER BY time DESC'
-    )
-    return influx_query(q)
-
-
-def _body_battery_current() -> dict:
-    """The daily high/low from DailyStats are day-summary values, not the current
-    level — e.g. a fresh morning peak of 99 stays displayed as "today's battery"
-    all day even after hours of draining, misleadingly far from what's actually
-    on the watch right now. BodyBatteryIntraday has 5-min-interval readings, so
-    the most recent one is a much closer (though not perfectly live — bounded by
-    how recently the watch itself synced, see DeviceSync/wait_for_fresh_sync)
-    approximation of "right now"."""
-    rows = influx_query(
-        f'SELECT BodyBatteryLevel FROM "BodyBatteryIntraday" WHERE "Device" = \'{WATCH_DEVICE}\' '
-        f'ORDER BY time DESC LIMIT 1'
-    )
-    if not rows or rows[0].get("BodyBatteryLevel") is None:
-        return {"available": False}
-    row = rows[0]
-    ts = datetime.fromisoformat(row["time"].replace("Z", "+00:00"))
-    age_minutes = (datetime.now(timezone.utc) - ts).total_seconds() / 60
-    return {
-        "available": True,
-        "level": row["BodyBatteryLevel"],
-        "age_minutes": round(age_minutes),
-    }
-
-
-def build_metrics() -> dict:
-    today = daily_stats_window(0, 1)
-    last_7d = daily_stats_window(0, 7)
-    prev_7d = daily_stats_window(7, 7)
-    last_28d = daily_stats_window(0, 28)
-
-    today_sleep = sleep_summary_window(0, 1)
-    today_sleep_h = round(today_sleep[0]["sleepTimeSeconds"] / 3600, 1) if today_sleep and today_sleep[0].get("sleepTimeSeconds") else None
-    today_sleep_score = today_sleep[0].get("sleepScore") if today_sleep else None
-    # sleep_vs_7d_avg compares against the 6 days BEFORE today, not including today
-    # itself — otherwise the deviation gets structurally dampened by including
-    # today in its own baseline average.
-    prior_6d_sleep = sleep_summary_window(1, 6)
-    prior_6d_sleep_avg = avg(prior_6d_sleep, "sleepTimeSeconds")
-    last_7d_sleep = sleep_summary_window(0, 7)
-
-    return {
-        "today": {
-            "resting_hr": today[0].get("restingHeartRate") if today else None,
-            "steps": today[0].get("totalSteps") if today else None,
-            "body_battery_current": _body_battery_current(),
-            "body_battery_high": today[0].get("bodyBatteryHighestValue") if today else None,
-            "body_battery_low": today[0].get("bodyBatteryLowestValue") if today else None,
-            "sleep_hours": today_sleep_h,
-            "sleep_score": today_sleep_score,
-            "sleep_vs_prior_6d_avg_hours": round(today_sleep_h - prior_6d_sleep_avg / 3600, 1)
-            if today_sleep_h is not None and prior_6d_sleep_avg
-            else None,
-            "activities_already_done_today": _activities_today(),
-        },
-        "last_7d_avg": {
-            "resting_hr": avg(last_7d, "restingHeartRate"),
-            "steps": avg(last_7d, "totalSteps"),
-            "stress_pct": avg(last_7d, "stressPercentage"),
-            "sleep_hours": round(avg(last_7d_sleep, "sleepTimeSeconds") / 3600, 1)
-            if avg(last_7d_sleep, "sleepTimeSeconds")
-            else None,
-            "days_with_data": len(last_7d),
-        },
-        "prev_7d_avg": {
-            "resting_hr": avg(prev_7d, "restingHeartRate"),
-            "steps": avg(prev_7d, "totalSteps"),
-            "stress_pct": avg(prev_7d, "stressPercentage"),
-        },
-        "last_28d_avg": {
-            "resting_hr": avg(last_28d, "restingHeartRate"),
-            "steps": avg(last_28d, "totalSteps"),
-        },
-        "training_readiness": _training_readiness(),
-        "training_status": _training_status(),
-        "lactate_threshold_running": _lactate_threshold(),
-        "cycling_hr_zones": _cycling_hr_zones(today, last_28d),
-        "cycling_power_zones": _cycling_power_zones(),
-        "baseline_deviation": _baseline_deviation(),
-        "recent_activities_14d": _activities_since(local_midnight_utc(LOG_HISTORY_DAYS - 1)),
-        "intensity_distribution_7d": _intensity_distribution(7),
-        "intensity_distribution_28d": _intensity_distribution(28),
-        "training_load_by_sport": _training_load_by_sport(),
-        "vo2max": _vo2max_trend(),
-    }
-
-
-def _activities_today() -> list[dict]:
-    return _activities_since(local_midnight_utc(0))
-
-
-def _activities_since(start: datetime) -> list[dict]:
-    rows = influx_query(
-        f'SELECT activityType, activityName, distance, elapsedDuration, averageHR, calories '
-        f'FROM "ActivitySummary" WHERE time >= \'{start.isoformat()}\' ORDER BY time DESC'
-    )
-    result = []
-    seen = set()
-    for r in rows:
-        activity_type = r.get("activityType")
-        if not activity_type or activity_type == "No Activity":
-            continue
-        key = (r.get("time"), activity_type, r.get("activityName"), r.get("distance"))
-        if key in seen:  # garmin-fetch-data can write an activity twice on re-sync
-            continue
-        seen.add(key)
-        ts_utc = datetime.fromisoformat(r["time"].replace("Z", "+00:00"))
-        ts_local = ts_utc.astimezone(LOCAL_TZ)
-        result.append(
-            {
-                "date": r["time"][:10],
-                "local_time": ts_local.strftime("%H:%M"),
-                "type": activity_type,
-                "name": r.get("activityName"),
-                "distance_km": round(r["distance"] / 1000, 1) if r.get("distance") else None,
-                "duration_min": round(r["elapsedDuration"] / 60) if r.get("elapsedDuration") else None,
-                "avg_hr": r.get("averageHR"),
-                "calories": r.get("calories"),
-            }
-        )
-    return result
-
-
-def _intensity_distribution(days: int) -> dict:
-    """Polarized/pyramidal training theory: recreational endurance athletes do best
-    with most volume easy (zone 1-2) and minimal time in the "grey zone" (zone 3) —
-    the classic failure mode is easy days drifting into moderate effort. hrTimeInZone_*
-    (seconds per activity) is already recorded per activity by garmin-fetch-data, so
-    this is a straight sum-and-percentage over the window, no new data source needed."""
-    start = local_midnight_utc(days - 1)
-    rows = influx_query(
-        f'SELECT hrTimeInZone_1, hrTimeInZone_2, hrTimeInZone_3, hrTimeInZone_4, hrTimeInZone_5 '
-        f'FROM "ActivitySummary" WHERE time >= \'{start.isoformat()}\' AND "Device" = \'{WATCH_DEVICE}\''
-    )
-    zones = [0.0] * 5
-    for r in rows:
-        for i in range(5):
-            zones[i] += r.get(f"hrTimeInZone_{i + 1}") or 0
-    total = sum(zones)
-    if total == 0:
-        return {"available": False}
-    low_pct = round((zones[0] + zones[1]) / total * 100)
-    mid_pct = round(zones[2] / total * 100)
-    high_pct = round((zones[3] + zones[4]) / total * 100)
-    return {
-        "available": True,
-        "low_zone1_2_pct": low_pct,
-        "mid_zone3_pct": mid_pct,
-        "high_zone4_5_pct": high_pct,
-        "total_hr_zone_minutes": round(total / 60),
-    }
-
-
-def _training_load_by_sport() -> dict:
-    """Garmin's own ACWR (training_status.acute_chronic_load_ratio) combines running
-    and cycling into one number, which can hide a sport-specific ramp (e.g. cycling
-    load spiking while running stays flat). activityTrainingLoad is Garmin's own
-    per-activity load figure (EPOC-based), already recorded — this sums it per sport
-    over a 7d/28d-weekly-average window as a lighter per-sport signal alongside the
-    combined ACWR, not a replacement for it (Garmin's ACWR uses different weighting
-    internally, so don't call this figure "ACWR" too)."""
-    start_7d = local_midnight_utc(6)
-    start_28d = local_midnight_utc(27)
-    result = {}
-    for sport, types in SPORT_TYPES.items():
-        type_filter = " OR ".join(f"activityType = '{t}'" for t in types)
-        rows_7d = influx_query(
-            f'SELECT activityTrainingLoad FROM "ActivitySummary" '
-            f'WHERE time >= \'{start_7d.isoformat()}\' AND "Device" = \'{WATCH_DEVICE}\' AND ({type_filter})'
-        )
-        rows_28d = influx_query(
-            f'SELECT activityTrainingLoad FROM "ActivitySummary" '
-            f'WHERE time >= \'{start_28d.isoformat()}\' AND "Device" = \'{WATCH_DEVICE}\' AND ({type_filter})'
-        )
-        load_7d = sum(r.get("activityTrainingLoad") or 0 for r in rows_7d)
-        load_28d = sum(r.get("activityTrainingLoad") or 0 for r in rows_28d)
-        weekly_avg_28d = load_28d / 4
-        result[sport] = {
-            "load_last_7d": round(load_7d),
-            "weekly_avg_last_28d": round(weekly_avg_28d),
-            "load_ramp_ratio": round(load_7d / weekly_avg_28d, 2) if weekly_avg_28d else None,
-        }
-    return result
-
-
-def _vo2max_trend() -> dict:
-    """Latest known VO2max per sport plus the value from ~28 days ago for a trend —
-    VO2_max_value (running) and VO2_max_value_cycling only update on days Garmin can
-    compute them (not every activity), so pick the most recent non-null reading in
-    each window rather than assuming the newest row has both."""
-    def latest_nonnull(field: str, before_days: int = 0) -> float | None:
-        end_clause = f'AND time < \'{local_midnight_utc(before_days).isoformat()}\'' if before_days else ""
-        rows = influx_query(
-            f'SELECT {field} FROM "VO2_Max" WHERE "Device" = \'{WATCH_DEVICE}\' {end_clause} '
-            f'ORDER BY time DESC LIMIT 20'
-        )
-        for r in rows:
-            if r.get(field) is not None:
-                return r[field]
-        return None
-
-    running_now = latest_nonnull("VO2_max_value")
-    running_28d_ago = latest_nonnull("VO2_max_value", before_days=28)
-    cycling_now = latest_nonnull("VO2_max_value_cycling")
-    cycling_28d_ago = latest_nonnull("VO2_max_value_cycling", before_days=28)
-
-    result = {}
-    if running_now is not None:
-        result["running"] = {
-            "current": running_now,
-            "delta_28d": round(running_now - running_28d_ago, 1) if running_28d_ago is not None else None,
-        }
-    if cycling_now is not None:
-        result["cycling"] = {
-            "current": cycling_now,
-            "delta_28d": round(cycling_now - cycling_28d_ago, 1) if cycling_28d_ago is not None else None,
-        }
-    return result or {"available": False}
-
-
-def vo2max_series(days: int) -> dict:
-    """Actual reading-by-reading VO2max history for the dashboard's trend chart —
-    _vo2max_trend() above only keeps two points (now vs. ~28d ago) for the LLM
-    prompt, which isn't enough to draw a real line. Only non-null readings are
-    returned (both fields are sparse — see _vo2max_trend's docstring)."""
-    start = local_midnight_utc(days - 1)
-    result = {}
-    for sport, field in (("running", "VO2_max_value"), ("cycling", "VO2_max_value_cycling")):
-        rows = influx_query(
-            f'SELECT {field} FROM "VO2_Max" WHERE "Device" = \'{WATCH_DEVICE}\' '
-            f'AND time >= \'{start.isoformat()}\' ORDER BY time ASC'
-        )
-        result[sport] = [{"date": r["time"][:10], "value": r[field]} for r in rows if r.get(field) is not None]
-    return result
+def owner_lock_file(owner_id: int) -> str:
+    """Per-AI-session-owner cross-process lock — two INDEPENDENT owners' runs
+    must be able to proceed concurrently (each has their own tmux pane), while
+    two users sharing the SAME owner's session still correctly serialize
+    through this one file."""
+    return f"/tmp/coach-{owner_id}.lock"
 
 
 def _stddev(vals: list[float]) -> float | None:
@@ -366,167 +93,13 @@ def _stddev(vals: list[float]) -> float | None:
     return variance**0.5
 
 
-def _baseline_deviation() -> dict:
-    """Compares today's HRV and resting HR against a 28-day rolling baseline
-    (mean + stddev). Garmin's own training_readiness score already folds
-    similar signals together as a black box — this gives the LLM an explicit,
-    concrete number to reference instead ("HRV is 1.3 SD below your 28-day
-    baseline") rather than only a bare 0-100 score."""
-    today_hrv_rows = influx_query("SELECT mean(hrvValue) FROM HRV_Intraday WHERE time > now() - 1d")
-    today_hrv = today_hrv_rows[0].get("mean") if today_hrv_rows else None
-
-    daily_hrv_rows = influx_query(
-        "SELECT mean(hrvValue) FROM HRV_Intraday WHERE time > now() - 29d AND time < now() - 1d "
-        "GROUP BY time(1d) fill(none)"
-    )
-    hrv_history = [r["mean"] for r in daily_hrv_rows if r.get("mean") is not None]
-
-    rhr_rows = daily_stats_window(1, 28)
-    rhr_history = [r["restingHeartRate"] for r in rhr_rows if r.get("restingHeartRate") is not None]
-    today_rhr_rows = daily_stats_window(0, 1)
-    today_rhr = today_rhr_rows[0].get("restingHeartRate") if today_rhr_rows else None
-
-    result = {}
-    if today_hrv is not None and len(hrv_history) >= 7:
-        hrv_mean = sum(hrv_history) / len(hrv_history)
-        hrv_sd = _stddev(hrv_history)
-        result["hrv_today"] = round(today_hrv, 1)
-        result["hrv_28d_baseline_mean"] = round(hrv_mean, 1)
-        result["hrv_deviation_sd"] = round((today_hrv - hrv_mean) / hrv_sd, 1) if hrv_sd else None
-
-    if today_rhr is not None and len(rhr_history) >= 7:
-        rhr_mean = sum(rhr_history) / len(rhr_history)
-        rhr_sd = _stddev(rhr_history)
-        result["resting_hr_today"] = today_rhr
-        result["resting_hr_28d_baseline_mean"] = round(rhr_mean, 1)
-        result["resting_hr_deviation_sd"] = round((today_rhr - rhr_mean) / rhr_sd, 1) if rhr_sd else None
-
-    return result or {"available": False}
-
-
-def _training_readiness() -> dict:
-    r = latest("TrainingReadiness")
-    if not r.get("available", True):
-        return r
-    return {
-        "score": r.get("score"),
-        "level": r.get("level"),
-        "acute_load": r.get("acuteLoad"),
-        "recovery_time_hours": round(r["recoveryTime"] / 60, 1) if r.get("recoveryTime") else None,
-        "sleep_score": r.get("sleepScore"),
-        # Garmin's own per-factor breakdown of the score (0-100 each, higher = more
-        # favorable) — partially de-black-boxes the composite score, and is the key
-        # to diagnosing a disagreement with baseline_deviation (does a low readiness
-        # trace back to HRV specifically, or to sleep/stress/load instead?).
-        "factor_hrv": r.get("hrvFactorPercent"),
-        "factor_sleep": r.get("sleepScoreFactorPercent"),
-        "factor_recovery_time": r.get("recoveryTimeFactorPercent"),
-        "factor_acwr": r.get("acwrFactorPercent"),
-        "factor_stress_history": r.get("stressHistoryFactorPercent"),
-        "data_stale": r.get("_stale", False),
-    }
-
-
-def _training_status() -> dict:
-    r = latest("TrainingStatus")
-    if not r.get("available", True):
-        return r
-    return {
-        "status": r.get("trainingStatusFeedbackPhrase"),
-        "acute_chronic_load_ratio": r.get("dailyAcuteChronicWorkloadRatio"),
-        "acute_load": r.get("dailyTrainingLoadAcute"),
-        "chronic_load": r.get("dailyTrainingLoadChronic"),
-        "data_stale": r.get("_stale", False),
-    }
-
-
 def _format_pace(decimal_min_per_km: float) -> str:
     total_seconds = round(decimal_min_per_km * 60)
     return f"{total_seconds // 60}:{total_seconds % 60:02d}"
 
 
-def _lactate_threshold() -> dict:
-    r = latest("LactateThreshold")
-    if not r.get("available", True):
-        return r
-    # Garmin's lactateThresholdSpeed endpoint returns the value as seconds/meter (pace),
-    # not m/s speed — verified against a realistic threshold pace (~5-6 min/km).
-    sec_per_m = r.get("SpeedThreshold_RUNNING")
-    pace_decimal = sec_per_m * 1000 / 60 if sec_per_m else None
-    return {
-        "threshold_hr_running": r.get("HeartRateThreshold_RUNNING"),
-        "threshold_pace_min_per_km": f"{_format_pace(pace_decimal)} min/km" if pace_decimal else None,
-        "data_stale": r.get("_stale", False),
-    }
-
-
-def _cycling_hr_zones(today: list[dict], last_28d: list[dict]) -> dict:
-    # No cycling-specific lactate threshold available via Garmin's API (the endpoint
-    # exists technically but returns no data for this account) — compute generic HR
-    # zones with the Karvonen formula instead of a real FTP/threshold test. Kept as a
-    # fallback for when _cycling_power_zones() has no data (e.g. a new install with
-    # no long laps yet); when power data is available, that's the primary zone source.
-    resting_hr = (today[0].get("restingHeartRate") if today else None) or avg(last_28d, "restingHeartRate")
-    # Only cycling activities for max HR — running typically gives 5-10 bpm higher
-    # peaks and would skew the cycling zones.
-    cycling_filter = " OR ".join(f"activityType = '{t}'" for t in SPORT_TYPES["cycling"])
-    max_hr_rows = influx_query(f"SELECT max(maxHR) FROM ActivitySummary WHERE time > now() - 90d AND ({cycling_filter})")
-    max_hr = max_hr_rows[0].get("max") if max_hr_rows else None
-    if not resting_hr or not max_hr:
-        return {"available": False}
-    reserve = max_hr - resting_hr
-    return {
-        "available": True,
-        "resting_hr": resting_hr,
-        "max_hr_measured_90d_cycling": max_hr,
-        "zone2_endurance_bpm": [round(resting_hr + reserve * 0.6), round(resting_hr + reserve * 0.7)],
-        "zone3_tempo_bpm": [round(resting_hr + reserve * 0.7), round(resting_hr + reserve * 0.8)],
-        "zone4_threshold_bpm": [round(resting_hr + reserve * 0.8), round(resting_hr + reserve * 0.9)],
-        "zone5_vo2max_bpm": [round(resting_hr + reserve * 0.9), max_hr],
-    }
-
-
 FTP_MIN_LAP_SECONDS = 18 * 60  # long enough to be a meaningful sustained-effort proxy for a 20-min FTP test
 FTP_FROM_20MIN_FACTOR = 0.95  # standard estimate: FTP ≈ 95% of best ~20-min average power
-
-
-def _cycling_power_zones() -> dict:
-    """Estimates FTP from the single best sustained-power lap (>=18 min) across the
-    last 90 days of cycling activities, using the standard "95% of best ~20-min
-    power" rule of thumb — no dedicated FTP test needed, just real ride data the
-    watch/bike computer already recorded per lap. This is more direct than the HR-based
-    Karvonen zones in _cycling_hr_zones() (which only approximates effort via heart
-    rate), but it's still an estimate from whatever laps happen to exist, not a
-    structured test — label it as such in the prompt."""
-    # ActivityLap uses its own coarse Sport field ("cycling"/"running"/"generic"), unlike
-    # ActivitySummary's fine-grained activityType (road_biking/gravel_cycling/...) that
-    # SPORT_TYPES is built for — a different field, not reusable here.
-    rows = influx_query(
-        f'SELECT Avg_Power, Elapsed_Time FROM "ActivityLap" WHERE time > now() - 90d '
-        f'AND Sport = \'cycling\' AND "Device" = \'{WATCH_DEVICE}\''
-    )
-    candidates = [
-        r["Avg_Power"]
-        for r in rows
-        if r.get("Avg_Power") is not None and r.get("Elapsed_Time") is not None and r["Elapsed_Time"] >= FTP_MIN_LAP_SECONDS
-    ]
-    if not candidates:
-        return {"available": False}
-    best_power = max(candidates)
-    ftp = round(best_power * FTP_FROM_20MIN_FACTOR)
-    # Standard 6-zone model (Coggan), expressed as % of FTP.
-    return {
-        "available": True,
-        "estimated_ftp_watts": ftp,
-        "estimated_from_best_lap_watts": best_power,
-        "note": "estimated from the best sustained (18+ min) lap in the last 90 days, not a dedicated FTP test",
-        "zone1_recovery_watts": [0, round(ftp * 0.55)],
-        "zone2_endurance_watts": [round(ftp * 0.56), round(ftp * 0.75)],
-        "zone3_tempo_watts": [round(ftp * 0.76), round(ftp * 0.90)],
-        "zone4_threshold_watts": [round(ftp * 0.91), round(ftp * 1.05)],
-        "zone5_vo2max_watts": [round(ftp * 1.06), round(ftp * 1.20)],
-        "zone6_anaerobic_watts": [round(ftp * 1.21), None],
-    }
 
 
 _COLOR_RANK = {"red": 3, "yellow": 2, "green": 1, "gray": 0}
@@ -576,46 +149,18 @@ def _compute_adherence(target_entry: dict, actual_activities: list[dict]) -> dic
     return {"run": run, "bike": bike, "day_color": day_color}
 
 
-def _backfill_adherence(entries: list[dict]) -> list[dict]:
-    """Yesterday's advice targeted "today" at write time, so it can only be scored
-    once today's activities actually exist — done here, one cron run later, rather
-    than at dashboard-read time, so the algorithm lives in one place and the result
-    is persisted (no recomputation drift)."""
-    yesterday = NOW_LOCAL.date() - timedelta(days=1)
-    for entry in entries:
-        if entry.get("weekly") or "adherence" in entry:
-            continue
-        if entry.get("date") != yesterday.isoformat():
-            continue
-        actual = [a for a in _activities_since(local_midnight_utc(1)) if a.get("date") == yesterday.isoformat()]
-        entry["adherence"] = _compute_adherence(entry, actual)
-    return entries
-
-
-def read_coach_log() -> list[dict]:
-    """Own log of past advice, kept on the persisted coach-home volume — the
-    Claude session itself is reset (`/clear`) after every run, so without this
-    each day starts from zero with no memory of what was advised or how the
-    user's ACWR/readiness trended over the past runs."""
-    if not os.path.exists(LOG_FILE):
+def read_coach_log(user_id: int) -> list[dict]:
+    """This user's own log of past advice, kept on the persisted coach-home
+    volume — the Claude session itself is reset (`/clear`) after every run,
+    so without this each day starts from zero with no memory of what was
+    advised or how the user's ACWR/readiness trended over the past runs."""
+    log_file = owner_log_file(user_id)
+    if not os.path.exists(log_file):
         return []
-    with open(LOG_FILE) as f:
+    with open(log_file) as f:
         entries = json.load(f)
     cutoff = (NOW_LOCAL - timedelta(days=LOG_HISTORY_DAYS)).date().isoformat()
     return [e for e in entries if e.get("date", "") >= cutoff]
-
-
-def write_coach_log(advice: dict, weekly: bool):
-    entries = _backfill_adherence(read_coach_log())
-    entries.append(
-        {
-            "date": NOW_LOCAL.date().isoformat(),
-            "weekly": weekly,
-            "advice": advice,
-        }
-    )
-    with open(LOG_FILE, "w") as f:
-        json.dump(entries, f, ensure_ascii=False)
 
 
 TIP_STRUCTURE = """TIP STRUCTURE — applies to run_tip, bike_tip, and to the weekly run_advice and bike_advice. Every one of these fields MUST follow this exact structure, in {LANGUAGE}:
@@ -657,7 +202,7 @@ JSON_SCHEMA_WEEKLY = """{
 }"""
 
 
-def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict]) -> str:
+def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict], owner_id: int) -> str:
     m = json.dumps(metrics, indent=2, ensure_ascii=False)
     log = json.dumps(coach_log, indent=2, ensure_ascii=False) if coach_log else "[]"
     disclaimer = (
@@ -880,52 +425,7 @@ orange/red), regardless of {LANGUAGE}:
 {disclaimer}
 
 Write ONLY the JSON (nothing else, no explanation, no markdown code block) to the file
-{OUTPUT_FILE} using the {get_provider(PROVIDER)["write_tool_name"]} tool. Then give a brief confirmation in the chat."""
-
-
-def build_chat_context() -> str:
-    """Metrics + coach_log JSON blob injected into the first message of a new
-    dashboard chat conversation, so the user can ask "why?"-style follow-up
-    questions without re-pasting their own data. Reuses the same build_metrics()/
-    read_coach_log() the daily prompt and dashboard.py's /api/data already call —
-    no separate query layer for chat."""
-    metrics = json.dumps(build_metrics(), indent=2, ensure_ascii=False)
-    log = json.dumps(read_coach_log(), indent=2, ensure_ascii=False)
-    return f"""Here is the user's current training data (for your reference — refer to
-concrete numbers from it when relevant, same as your daily advice):
-
-{metrics}
-
-Your own recent advice history:
-
-{log}"""
-
-
-def call_claude(prompt: str) -> dict:
-    """Sends the prompt to the permanent 'coach' tmux session (running whichever
-    provider is selected — see providers.py) instead of spawning a fresh
-    headless CLI subprocess per call — the latter triggers an expensive cache
-    write (system prompt/tools) every time, which burns a disproportionate
-    amount of the session quota on a cold/fresh container start.
-
-    The CLI writes the answer itself to OUTPUT_FILE (via its file-write tool)
-    instead of us trying to scrape it from the tmux screen text — screen-text
-    parsing turned out to be fragile (race conditions with intermediate
-    'thinking' frames, line wraps that broke JSON strings, markers seen too
-    early/late)."""
-    import session_ask
-
-    session_ask.ask_and_wait_for_file(prompt, OUTPUT_FILE)
-    with open(OUTPUT_FILE) as f:
-        response_text = f.read().strip()
-    os.remove(OUTPUT_FILE)
-
-    if response_text.startswith("```"):
-        response_text = response_text.strip("`")
-        if response_text.startswith("json"):
-            response_text = response_text[4:]
-        response_text = response_text.strip()
-    return json.loads(response_text)
+{owner_output_file(owner_id)} using the {get_provider(PROVIDER)["write_tool_name"]} tool. Then give a brief confirmation in the chat."""
 
 
 # Matched against English color-name substrings so this keeps working regardless
@@ -1008,53 +508,3 @@ def post_error_to_discord(error: Exception):
         pass  # if even the error message can't be sent, there's nothing more to do
 
 
-SYNC_WAIT_MAX_SECONDS = 180
-SYNC_WAIT_POLL_SECONDS = 60
-
-
-def wait_for_fresh_sync():
-    """garmin-fetch-data syncs from Garmin Connect to InfluxDB every 5 minutes
-    on its own — this just gives it a bit of headroom before we read the data,
-    in case a sync cycle is in progress right when this runs. Not a hard
-    guarantee (we don't have Docker access to force a sync), just a short,
-    bounded wait: if the watch's last-known sync (DeviceSync) is very recent,
-    give garmin-fetch-data one more poll interval to pick it up before we read."""
-    rows = influx_query("SELECT * FROM DeviceSync ORDER BY time DESC LIMIT 1")
-    if not rows:
-        return
-    ts = datetime.fromisoformat(rows[0]["time"].replace("Z", "+00:00"))
-    age_seconds = (datetime.now(timezone.utc) - ts).total_seconds()
-    if age_seconds < SYNC_WAIT_POLL_SECONDS:
-        wait = min(SYNC_WAIT_POLL_SECONDS - age_seconds + 5, SYNC_WAIT_MAX_SECONDS)
-        print(f"Recent watch sync detected ({age_seconds:.0f}s ago) — waiting {wait:.0f}s for garmin-fetch-data to catch up.")
-        time.sleep(wait)
-
-
-def main():
-    wait_for_fresh_sync()
-    metrics = build_metrics()
-    coach_log = read_coach_log()
-    prompt = build_prompt(metrics, IS_WEEKLY, coach_log)
-    advice = call_claude(prompt)
-    embed = build_embed(advice, IS_WEEKLY)
-    post_discord(embed)
-    write_coach_log(advice, IS_WEEKLY)
-    print(f"Done ({'weekly' if IS_WEEKLY else 'daily'}):", json.dumps(advice, ensure_ascii=False))
-
-
-if __name__ == "__main__":
-    lock_fd = open(LOCK_FILE, "w")
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        print("Another coach.py run is already in progress — skipping.", file=sys.stderr)
-        sys.exit(1)
-    try:
-        main()
-    except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        post_error_to_discord(e)
-        sys.exit(1)
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        lock_fd.close()

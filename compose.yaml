@@ -6,15 +6,25 @@ services:
     restart: unless-stopped
     network_mode: bridge
     environment:
-      - INFLUXDB_URL=${INFLUXDB_URL}
-      - INFLUXDB_DB=${INFLUXDB_DB:-GarminStats}
+      # First-run-default seeding only for a brand-new user's settings row
+      # (settings.py's _ENV_FALLBACKS) — once a user has saved settings via
+      # the dashboard, these are no longer read live. Not required (all have
+      # defaults) except the two INITIAL_ADMIN_* vars, which are only used
+      # once by migrate_to_multiuser.py to create the first admin account.
       - WATCH_DEVICE=${WATCH_DEVICE:-fenix 8 - 47mm, AMOLED}
       - LOCAL_TZ=${LOCAL_TZ:-Europe/Amsterdam}
       - LANGUAGE=${LANGUAGE:-English}
-      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      # Container-level AI-provider credentials — shared by whichever session
+      # owner(s) use that provider (see session_manager.py's per-owner HOME).
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
       - DASHBOARD_PORT=${DASHBOARD_PORT:-8420}
+      # Only used once, by migrate_to_multiuser.py, to create the initial
+      # admin account on first boot (or the next boot after being set, if
+      # missed initially — the script is safe to re-run).
+      - INITIAL_ADMIN_USERNAME=${INITIAL_ADMIN_USERNAME:-}
+      - INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD:-}
     ports:
       - "4874:8420"
     volumes:

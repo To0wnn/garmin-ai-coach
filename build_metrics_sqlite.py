@@ -37,28 +37,28 @@ def avg(rows: list[dict], field: str) -> float | None:
     return round(sum(vals) / len(vals), 1) if vals else None
 
 
-def _daily_stats_window(days_back: int, window_days: int) -> list[dict]:
+def _daily_stats_window(user_id: int, days_back: int, window_days: int) -> list[dict]:
     start, end = _date_range(days_back + window_days - 1, days_back)
     return db.query(
         "SELECT date, resting_hr as restingHeartRate, steps as totalSteps, "
         "stress_avg as stressPercentage, bb_high as bodyBatteryHighestValue, "
         "bb_low as bodyBatteryLowestValue FROM daily_summary "
-        "WHERE date BETWEEN ? AND ? ORDER BY date DESC",
-        (start, end),
+        "WHERE user_id = ? AND date BETWEEN ? AND ? ORDER BY date DESC",
+        (user_id, start, end),
     )
 
 
-def _sleep_window(days_back: int, window_days: int) -> list[dict]:
+def _sleep_window(user_id: int, days_back: int, window_days: int) -> list[dict]:
     start, end = _date_range(days_back + window_days - 1, days_back)
     return db.query(
         "SELECT date, sleep_seconds as sleepTimeSeconds, sleep_score as sleepScore "
-        "FROM sleep WHERE date BETWEEN ? AND ? ORDER BY date DESC",
-        (start, end),
+        "FROM sleep WHERE user_id = ? AND date BETWEEN ? AND ? ORDER BY date DESC",
+        (user_id, start, end),
     )
 
 
-def _body_battery_current() -> dict:
-    rows = db.query("SELECT ts, level FROM bb_intraday ORDER BY ts DESC LIMIT 1")
+def _body_battery_current(user_id: int) -> dict:
+    rows = db.query("SELECT ts, level FROM bb_intraday WHERE user_id = ? ORDER BY ts DESC LIMIT 1", (user_id,))
     if not rows:
         return {"available": False}
     ts = datetime.fromtimestamp(rows[0]["ts"], tz=coach.LOCAL_TZ)
@@ -66,9 +66,9 @@ def _body_battery_current() -> dict:
     return {"available": True, "level": rows[0]["level"], "age_minutes": round(age_minutes)}
 
 
-def _activities_since(start_date: str) -> list[dict]:
+def _activities_since(user_id: int, start_date: str) -> list[dict]:
     rows = db.query(
-        "SELECT * FROM activities WHERE date >= ? ORDER BY start_utc DESC", (start_date,)
+        "SELECT * FROM activities WHERE user_id = ? AND date >= ? ORDER BY start_utc DESC", (user_id, start_date)
     )
     result = []
     for r in rows:
@@ -89,12 +89,12 @@ def _activities_since(start_date: str) -> list[dict]:
     return result
 
 
-def _intensity_distribution(days: int) -> dict:
+def _intensity_distribution(user_id: int, days: int) -> dict:
     start = _date(days - 1)
     rows = db.query(
         "SELECT hr_zone1_s, hr_zone2_s, hr_zone3_s, hr_zone4_s, hr_zone5_s "
-        "FROM activities WHERE date >= ?",
-        (start,),
+        "FROM activities WHERE user_id = ? AND date >= ?",
+        (user_id, start),
     )
     zones = [0.0] * 5
     keys = ["hr_zone1_s", "hr_zone2_s", "hr_zone3_s", "hr_zone4_s", "hr_zone5_s"]
@@ -116,19 +116,19 @@ def _intensity_distribution(days: int) -> dict:
     }
 
 
-def _training_load_by_sport() -> dict:
+def _training_load_by_sport(user_id: int) -> dict:
     start_7d = _date(6)
     start_28d = _date(27)
     result = {}
     for sport, types in coach.SPORT_TYPES.items():
         placeholders = ",".join("?" for _ in types)
         rows_7d = db.query(
-            f"SELECT training_load FROM activities WHERE date >= ? AND type IN ({placeholders})",
-            (start_7d, *types),
+            f"SELECT training_load FROM activities WHERE user_id = ? AND date >= ? AND type IN ({placeholders})",
+            (user_id, start_7d, *types),
         )
         rows_28d = db.query(
-            f"SELECT training_load FROM activities WHERE date >= ? AND type IN ({placeholders})",
-            (start_28d, *types),
+            f"SELECT training_load FROM activities WHERE user_id = ? AND date >= ? AND type IN ({placeholders})",
+            (user_id, start_28d, *types),
         )
         load_7d = sum(r.get("training_load") or 0 for r in rows_7d)
         load_28d = sum(r.get("training_load") or 0 for r in rows_28d)
@@ -141,24 +141,30 @@ def _training_load_by_sport() -> dict:
     return result
 
 
-def _vo2max_trend() -> dict:
-    def latest_nonnull(col: str, before_days: int = 0) -> float | None:
+def _vo2max_trend(user_id: int) -> dict:
+    # Garmin returns both a rounded whole-number vo2MaxValue and a
+    # vo2MaxPreciseValue (e.g. 51.0 vs. 51.5) — prefer the precise column via
+    # COALESCE, falling back to the rounded one for rows synced before the
+    # precise columns existed (an older backfill) rather than losing them.
+    def latest_nonnull(col: str, precise_col: str, before_days: int = 0) -> float | None:
+        value_expr = f"COALESCE({precise_col}, {col})"
         if before_days:
             rows = db.query(
-                f"SELECT {col} FROM max_metrics WHERE date < ? AND {col} IS NOT NULL "
+                f"SELECT {value_expr} as v FROM max_metrics WHERE user_id = ? AND date < ? AND {col} IS NOT NULL "
                 f"ORDER BY date DESC LIMIT 1",
-                (_date(before_days),),
+                (user_id, _date(before_days)),
             )
         else:
             rows = db.query(
-                f"SELECT {col} FROM max_metrics WHERE {col} IS NOT NULL ORDER BY date DESC LIMIT 1"
+                f"SELECT {value_expr} as v FROM max_metrics WHERE user_id = ? AND {col} IS NOT NULL ORDER BY date DESC LIMIT 1",
+                (user_id,),
             )
-        return rows[0][col] if rows else None
+        return rows[0]["v"] if rows else None
 
-    running_now = latest_nonnull("vo2max_run")
-    running_28d_ago = latest_nonnull("vo2max_run", before_days=28)
-    cycling_now = latest_nonnull("vo2max_cycle")
-    cycling_28d_ago = latest_nonnull("vo2max_cycle", before_days=28)
+    running_now = latest_nonnull("vo2max_run", "vo2max_run_precise")
+    running_28d_ago = latest_nonnull("vo2max_run", "vo2max_run_precise", before_days=28)
+    cycling_now = latest_nonnull("vo2max_cycle", "vo2max_cycle_precise")
+    cycling_28d_ago = latest_nonnull("vo2max_cycle", "vo2max_cycle_precise", before_days=28)
 
     result = {}
     if running_now is not None:
@@ -174,24 +180,24 @@ def _vo2max_trend() -> dict:
     return result or {"available": False}
 
 
-def _baseline_deviation() -> dict:
-    today_hrv_rows = db.query("SELECT last_night_avg FROM hrv WHERE date = ?", (_date(0),))
+def _baseline_deviation(user_id: int) -> dict:
+    today_hrv_rows = db.query("SELECT last_night_avg FROM hrv WHERE user_id = ? AND date = ?", (user_id, _date(0)))
     today_hrv = today_hrv_rows[0]["last_night_avg"] if today_hrv_rows else None
 
     start, end = _date_range(28, 1)
     hrv_rows = db.query(
-        "SELECT last_night_avg FROM hrv WHERE date BETWEEN ? AND ? AND last_night_avg IS NOT NULL",
-        (start, end),
+        "SELECT last_night_avg FROM hrv WHERE user_id = ? AND date BETWEEN ? AND ? AND last_night_avg IS NOT NULL",
+        (user_id, start, end),
     )
     hrv_history = [r["last_night_avg"] for r in hrv_rows]
 
     rhr_start, rhr_end = _date_range(28, 1)
     rhr_rows = db.query(
-        "SELECT resting_hr FROM daily_summary WHERE date BETWEEN ? AND ? AND resting_hr IS NOT NULL",
-        (rhr_start, rhr_end),
+        "SELECT resting_hr FROM daily_summary WHERE user_id = ? AND date BETWEEN ? AND ? AND resting_hr IS NOT NULL",
+        (user_id, rhr_start, rhr_end),
     )
     rhr_history = [r["resting_hr"] for r in rhr_rows]
-    today_rhr_rows = db.query("SELECT resting_hr FROM daily_summary WHERE date = ?", (_date(0),))
+    today_rhr_rows = db.query("SELECT resting_hr FROM daily_summary WHERE user_id = ? AND date = ?", (user_id, _date(0)))
     today_rhr = today_rhr_rows[0]["resting_hr"] if today_rhr_rows else None
 
     result = {}
@@ -215,8 +221,8 @@ def _baseline_deviation() -> dict:
 STALE_AFTER_DAYS = 2  # day-granularity equivalent of coach.py's 36-hour STALE_AFTER_HOURS
 
 
-def _latest_row(table: str) -> dict:
-    rows = db.query(f"SELECT * FROM {table} ORDER BY date DESC LIMIT 1")
+def _latest_row(user_id: int, table: str) -> dict:
+    rows = db.query(f"SELECT * FROM {table} WHERE user_id = ? ORDER BY date DESC LIMIT 1", (user_id,))
     if not rows:
         return {"available": False}
     row = rows[0]
@@ -225,8 +231,8 @@ def _latest_row(table: str) -> dict:
     return row
 
 
-def _training_readiness() -> dict:
-    r = _latest_row("training_readiness")
+def _training_readiness(user_id: int) -> dict:
+    r = _latest_row(user_id, "training_readiness")
     if not r.get("available", True):
         return r
     return {
@@ -244,8 +250,8 @@ def _training_readiness() -> dict:
     }
 
 
-def _training_status() -> dict:
-    r = _latest_row("training_status")
+def _training_status(user_id: int) -> dict:
+    r = _latest_row(user_id, "training_status")
     if not r.get("available", True):
         return r
     return {
@@ -257,8 +263,8 @@ def _training_status() -> dict:
     }
 
 
-def _lactate_threshold() -> dict:
-    r = _latest_row("lactate_threshold")
+def _lactate_threshold(user_id: int) -> dict:
+    r = _latest_row(user_id, "lactate_threshold")
     if not r.get("available", True):
         return r
     sec_per_m = r.get("speed_threshold_sec_per_m")
@@ -270,12 +276,12 @@ def _lactate_threshold() -> dict:
     }
 
 
-def _cycling_hr_zones(today_rows: list[dict], last_28d: list[dict]) -> dict:
+def _cycling_hr_zones(user_id: int, today_rows: list[dict], last_28d: list[dict]) -> dict:
     resting_hr = (today_rows[0].get("restingHeartRate") if today_rows else None) or avg(last_28d, "restingHeartRate")
     placeholders = ",".join("?" for _ in coach.SPORT_TYPES["cycling"])
     max_hr_rows = db.query(
-        f"SELECT MAX(max_hr) as max_hr FROM activities WHERE date >= ? AND type IN ({placeholders})",
-        (_date(89), *coach.SPORT_TYPES["cycling"]),
+        f"SELECT MAX(max_hr) as max_hr FROM activities WHERE user_id = ? AND date >= ? AND type IN ({placeholders})",
+        (user_id, _date(89), *coach.SPORT_TYPES["cycling"]),
     )
     max_hr = max_hr_rows[0]["max_hr"] if max_hr_rows else None
     if not resting_hr or not max_hr:
@@ -292,12 +298,12 @@ def _cycling_hr_zones(today_rows: list[dict], last_28d: list[dict]) -> dict:
     }
 
 
-def _cycling_power_zones() -> dict:
+def _cycling_power_zones(user_id: int) -> dict:
     rows = db.query(
         "SELECT al.avg_power, al.duration_s FROM activity_laps al "
-        "JOIN activities a ON a.activity_id = al.activity_id "
-        "WHERE a.date >= ? AND a.type IN (" + ",".join("?" for _ in coach.SPORT_TYPES["cycling"]) + ")",
-        (_date(89), *coach.SPORT_TYPES["cycling"]),
+        "JOIN activities a ON a.user_id = al.user_id AND a.activity_id = al.activity_id "
+        "WHERE al.user_id = ? AND a.date >= ? AND a.type IN (" + ",".join("?" for _ in coach.SPORT_TYPES["cycling"]) + ")",
+        (user_id, _date(89), *coach.SPORT_TYPES["cycling"]),
     )
     candidates = [
         r["avg_power"]
@@ -322,24 +328,24 @@ def _cycling_power_zones() -> dict:
     }
 
 
-def build_metrics() -> dict:
-    today = _daily_stats_window(0, 1)
-    last_7d = _daily_stats_window(0, 7)
-    prev_7d = _daily_stats_window(7, 7)
-    last_28d = _daily_stats_window(0, 28)
+def build_metrics(user_id: int) -> dict:
+    today = _daily_stats_window(user_id, 0, 1)
+    last_7d = _daily_stats_window(user_id, 0, 7)
+    prev_7d = _daily_stats_window(user_id, 7, 7)
+    last_28d = _daily_stats_window(user_id, 0, 28)
 
-    today_sleep = _sleep_window(0, 1)
+    today_sleep = _sleep_window(user_id, 0, 1)
     today_sleep_h = round(today_sleep[0]["sleepTimeSeconds"] / 3600, 1) if today_sleep and today_sleep[0].get("sleepTimeSeconds") else None
     today_sleep_score = today_sleep[0].get("sleepScore") if today_sleep else None
-    prior_6d_sleep = _sleep_window(1, 6)
+    prior_6d_sleep = _sleep_window(user_id, 1, 6)
     prior_6d_sleep_avg = avg(prior_6d_sleep, "sleepTimeSeconds")
-    last_7d_sleep = _sleep_window(0, 7)
+    last_7d_sleep = _sleep_window(user_id, 0, 7)
 
     return {
         "today": {
             "resting_hr": today[0].get("restingHeartRate") if today else None,
             "steps": today[0].get("totalSteps") if today else None,
-            "body_battery_current": _body_battery_current(),
+            "body_battery_current": _body_battery_current(user_id),
             "body_battery_high": today[0].get("bodyBatteryHighestValue") if today else None,
             "body_battery_low": today[0].get("bodyBatteryLowestValue") if today else None,
             "sleep_hours": today_sleep_h,
@@ -347,7 +353,7 @@ def build_metrics() -> dict:
             "sleep_vs_prior_6d_avg_hours": round(today_sleep_h - prior_6d_sleep_avg / 3600, 1)
             if today_sleep_h is not None and prior_6d_sleep_avg
             else None,
-            "activities_already_done_today": _activities_since(_date(0)),
+            "activities_already_done_today": _activities_since(user_id, _date(0)),
         },
         "last_7d_avg": {
             "resting_hr": avg(last_7d, "restingHeartRate"),
@@ -367,35 +373,42 @@ def build_metrics() -> dict:
             "resting_hr": avg(last_28d, "restingHeartRate"),
             "steps": avg(last_28d, "totalSteps"),
         },
-        "training_readiness": _training_readiness(),
-        "training_status": _training_status(),
-        "lactate_threshold_running": _lactate_threshold(),
-        "cycling_hr_zones": _cycling_hr_zones(today, last_28d),
-        "cycling_power_zones": _cycling_power_zones(),
-        "baseline_deviation": _baseline_deviation(),
-        "recent_activities_14d": _activities_since(_date(LOG_HISTORY_DAYS - 1)),
-        "intensity_distribution_7d": _intensity_distribution(7),
-        "intensity_distribution_28d": _intensity_distribution(28),
-        "training_load_by_sport": _training_load_by_sport(),
-        "vo2max": _vo2max_trend(),
+        "training_readiness": _training_readiness(user_id),
+        "training_status": _training_status(user_id),
+        "lactate_threshold_running": _lactate_threshold(user_id),
+        "cycling_hr_zones": _cycling_hr_zones(user_id, today, last_28d),
+        "cycling_power_zones": _cycling_power_zones(user_id),
+        "baseline_deviation": _baseline_deviation(user_id),
+        "recent_activities_14d": _activities_since(user_id, _date(LOG_HISTORY_DAYS - 1)),
+        "intensity_distribution_7d": _intensity_distribution(user_id, 7),
+        "intensity_distribution_28d": _intensity_distribution(user_id, 28),
+        "training_load_by_sport": _training_load_by_sport(user_id),
+        "vo2max": _vo2max_trend(user_id),
     }
 
 
-def vo2max_series(days: int) -> dict:
+def vo2max_series(user_id: int, days: int) -> dict:
     """SQLite-backed replacement for coach.py's vo2max_series() — the dashboard's
     trend-chart data (full reading-by-reading history, not just now-vs-28d-ago).
     Only non-null readings returned (both fields are sparse, same as coach.py's
-    version — Garmin doesn't compute VO2max every day)."""
+    version — Garmin doesn't compute VO2max every day). Prefers the precise
+    (decimal) value Garmin also returns over the rounded whole-number one, same
+    COALESCE fallback as _vo2max_trend() for rows synced before precise columns
+    existed."""
     start = _date(days - 1)
     result = {}
-    for sport, col in (("running", "vo2max_run"), ("cycling", "vo2max_cycle")):
+    for sport, col, precise_col in (
+        ("running", "vo2max_run", "vo2max_run_precise"),
+        ("cycling", "vo2max_cycle", "vo2max_cycle_precise"),
+    ):
         rows = db.query(
-            f"SELECT date, {col} FROM max_metrics WHERE date >= ? AND {col} IS NOT NULL ORDER BY date ASC",
-            (start,),
+            f"SELECT date, COALESCE({precise_col}, {col}) as v FROM max_metrics "
+            f"WHERE user_id = ? AND date >= ? AND {col} IS NOT NULL ORDER BY date ASC",
+            (user_id, start),
         )
-        result[sport] = [{"date": r["date"], "value": r[col]} for r in rows]
+        result[sport] = [{"date": r["date"], "value": r["v"]} for r in rows]
     return result
 
 
 if __name__ == "__main__":
-    print(json.dumps(build_metrics(), indent=2, ensure_ascii=False))
+    print(json.dumps(build_metrics(1), indent=2, ensure_ascii=False))

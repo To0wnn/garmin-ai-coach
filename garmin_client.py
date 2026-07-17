@@ -32,9 +32,10 @@ class NotLoggedInError(Exception):
 
 
 class PendingLogin:
-    """Module-level singleton holding an in-progress (MFA-challenged) Garmin login
-    attempt — mirrors session_manager.py's existing module-level-state convention
-    for the AI-provider login flow."""
+    """Holds one in-progress (MFA-challenged) Garmin login attempt for one user —
+    mirrors session_manager.py's existing module-level-state convention for the
+    AI-provider login flow, but keyed per user_id (see _pending below) since two
+    users logging in around the same time must not clobber each other."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -61,32 +62,43 @@ class PendingLogin:
             self._created_at = 0.0
 
 
-_pending = PendingLogin()
+# One PendingLogin per user_id, created lazily. Guarded by its own lock only for
+# the dict access itself (insertion) — each PendingLogin's internal lock still
+# guards its own client/created_at, unchanged.
+_pending_by_user: dict[int, PendingLogin] = {}
+_pending_dict_lock = threading.Lock()
 
 
-def _token_string() -> str | None:
-    return db.get_sync_state(TOKEN_KEY)
+def _pending_for(user_id: int) -> PendingLogin:
+    with _pending_dict_lock:
+        if user_id not in _pending_by_user:
+            _pending_by_user[user_id] = PendingLogin()
+        return _pending_by_user[user_id]
 
 
-def _save_token(client: Garmin):
+def _token_string(user_id: int) -> str | None:
+    return db.get_sync_state(user_id, TOKEN_KEY)
+
+
+def _save_token(user_id: int, client: Garmin):
     # client.client (the Garmin wrapper's own inner Client instance, confirmed via
     # direct inspection of garminconnect 0.3.6 — there is no client.garth attribute,
     # only client.client) .dumps() returns the token as a string — stored directly in
     # sync_state rather than a separate credential file on disk, keeping all Garmin
     # state in one place (the sqlite file already needs to exist and be backed up
     # regardless).
-    db.set_sync_state(TOKEN_KEY, client.client.dumps())
+    db.set_sync_state(user_id, TOKEN_KEY, client.client.dumps())
 
 
-def login_status() -> dict:
+def login_status(user_id: int) -> dict:
     """Cheap, local check — does NOT make a network call. A stored token existing
     doesn't guarantee it's still valid server-side; that's only discovered lazily on
     the first real API call (see get_client()'s NotLoggedInError contract)."""
-    token = _token_string()
+    token = _token_string(user_id)
     return {"logged_in": token is not None}
 
 
-def start_login(email: str, password: str) -> dict:
+def start_login(user_id: int, email: str, password: str) -> dict:
     """Returns {"needs_mfa": bool, "logged_in": bool, "error": str|None}."""
     client = Garmin(email=email, password=password, return_on_mfa=True)
     try:
@@ -99,19 +111,19 @@ def start_login(email: str, password: str) -> dict:
         return {"needs_mfa": False, "logged_in": False, "error": str(e)}
 
     if result1 == "needs_mfa":
-        _pending.set(client)
+        _pending_for(user_id).set(client)
         return {"needs_mfa": True, "logged_in": False, "error": None}
 
-    _save_token(client)
-    _pending.clear()
+    _save_token(user_id, client)
+    _pending_for(user_id).clear()
     return {"needs_mfa": False, "logged_in": True, "error": None}
 
 
-def submit_mfa(code: str) -> dict:
+def submit_mfa(user_id: int, code: str) -> dict:
     """Returns {"logged_in": bool, "error": str|None}. Keeps the pending login alive
     on a wrong code (within the timeout window) so the user can retry without
     restarting the whole email/password step."""
-    client = _pending.get()
+    client = _pending_for(user_id).get()
     if client is None:
         return {"logged_in": False, "error": "No login in progress (or it expired) — start again with email/password."}
     try:
@@ -119,14 +131,14 @@ def submit_mfa(code: str) -> dict:
     except Exception as e:
         return {"logged_in": False, "error": f"MFA code not accepted: {e}"}
 
-    _save_token(client)
-    _pending.clear()
+    _save_token(user_id, client)
+    _pending_for(user_id).clear()
     return {"logged_in": True, "error": None}
 
 
-def logout():
-    db.execute("DELETE FROM sync_state WHERE key = ?", (TOKEN_KEY,))
-    _pending.clear()
+def logout(user_id: int):
+    db.execute("DELETE FROM sync_state WHERE user_id = ? AND key = ?", (user_id, TOKEN_KEY))
+    _pending_for(user_id).clear()
 
 
 # Rate-limit pacing shared by all sync code (Stage 4's garmin_sync.py) — one place
@@ -156,11 +168,11 @@ def paced_call(fn, *args, min_interval: float = 1.5, **kwargs):
             backoff = min(backoff * 2, _BACKOFF_CAP_SECONDS)
 
 
-def get_client() -> Garmin:
+def get_client(user_id: int) -> Garmin:
     """Returns a logged-in Garmin instance for sync code to use. Raises
     NotLoggedInError (a typed exception, not a bare Garmin one) if no token is
     stored, so callers can distinguish 'needs login' from a real API failure."""
-    token = _token_string()
+    token = _token_string(user_id)
     if token is None:
         raise NotLoggedInError("No Garmin login — connect via the dashboard's Garmin settings.")
     client = Garmin(email=None, password=None)
@@ -169,4 +181,4 @@ def get_client() -> Garmin:
 
 
 if __name__ == "__main__":
-    print(login_status())
+    print(login_status(1))

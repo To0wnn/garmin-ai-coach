@@ -15,7 +15,10 @@ import subprocess
 import tempfile
 import time
 
-SESSION = "coach"
+def session_name(owner_id: int) -> str:
+    return f"coach-{owner_id}"
+
+
 # The daily/weekly prompt got noticeably heavier once more metrics (intensity
 # distribution, per-sport load, VO2max, run_target/bike_target) were added —
 # a real run took over 80s of "thinking" alone plus tool calls before writing
@@ -39,22 +42,26 @@ def _tmux(*args: str) -> str:
 # paste-buffer instead loads the whole text as one tmux buffer and pastes it
 # as a single bracketed-paste event, however long it is — no per-call size
 # limit and no multi-paste fragmentation.
-def _send_literal_and_enter(text: str):
+def _send_literal_and_enter(owner_id: int, text: str):
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
         f.write(text)
         buf_path = f.name
     try:
         _tmux("load-buffer", "-b", "coach-prompt", buf_path)
-        _tmux("paste-buffer", "-b", "coach-prompt", "-t", SESSION)
+        _tmux("paste-buffer", "-b", "coach-prompt", "-t", session_name(owner_id))
     finally:
         os.remove(buf_path)
-    _tmux("send-keys", "-t", SESSION, "Enter")
+    _tmux("send-keys", "-t", session_name(owner_id), "Enter")
 
 
-PROMPT_FILE = "/app/output/prompt.md"
+def prompt_file(owner_id: int) -> str:
+    """Per-owner path — two owners' sessions writing/reading prompt files at
+    the same time (independent sessions, genuinely concurrent) must not
+    collide, since each is a real separate tmux pane now."""
+    return f"/app/output/{owner_id}/prompt.md"
 
 
-def _send_via_file_and_enter(text: str):
+def _send_via_file_and_enter(owner_id: int, text: str):
     """Writes the prompt to a file and sends only a short, single-line instruction
     referencing it, instead of pasting the full prompt into the pane. Confirmed
     necessary for Antigravity CLI: its TUI treats Enter as "new line" rather than
@@ -67,18 +74,20 @@ def _send_via_file_and_enter(text: str):
     more robust mechanism rather than a provider-specific special case — Claude
     Code doesn't hit this bug, but sending less raw text through the pane is
     strictly more robust there too as prompts keep growing."""
-    with open(PROMPT_FILE, "w") as f:
+    pf = prompt_file(owner_id)
+    os.makedirs(os.path.dirname(pf), exist_ok=True)
+    with open(pf, "w") as f:
         f.write(text)
-    _send_literal_and_enter(f"Read the file {PROMPT_FILE} and follow the instructions in it.")
+    _send_literal_and_enter(owner_id, f"Read the file {pf} and follow the instructions in it.")
 
 
-def _clear_session():
+def _clear_session(owner_id: int):
     """Clears the conversation so the next cron run starts with a clean
     slate — prevents unbounded context buildup in this long-lived session.
     /clear opens an autocomplete menu; the extra Enter afterwards confirms it."""
-    _send_literal_and_enter("/clear")
+    _send_literal_and_enter(owner_id, "/clear")
     time.sleep(2)
-    _tmux("send-keys", "-t", SESSION, "Enter")
+    _tmux("send-keys", "-t", session_name(owner_id), "Enter")
 
 
 def _wait_for_stable_file(output_file: str, max_wait_seconds: int):
@@ -107,37 +116,44 @@ def _wait_for_stable_file(output_file: str, max_wait_seconds: int):
     raise TimeoutError(f"No (stable) answer file within {max_wait_seconds}s: {output_file}")
 
 
-def _remove_prompt_file():
-    if os.path.exists(PROMPT_FILE):
-        os.remove(PROMPT_FILE)
+def _remove_prompt_file(owner_id: int):
+    pf = prompt_file(owner_id)
+    if os.path.exists(pf):
+        os.remove(pf)
 
 
-def ask_and_wait_for_file(prompt: str, output_file: str):
+def ask_and_wait_for_file(owner_id: int, prompt: str, output_file: str):
     """One-shot: sends prompt, waits for the answer file, then /clear's the
     session so the NEXT call starts with a clean slate. Used by coach.py's
-    daily/weekly advice generation, where each run is independent."""
+    daily/weekly advice generation, where each run is independent. owner_id
+    is the EFFECTIVE AI-session owner (the requesting user's own id, or the
+    id of whoever's session they're borrowing via a share code) — not
+    necessarily the user asking."""
     if os.path.exists(output_file):
         os.remove(output_file)
-    _send_via_file_and_enter(prompt)
+    _send_via_file_and_enter(owner_id, prompt)
     _wait_for_stable_file(output_file, MAX_WAIT_SECONDS)
-    _remove_prompt_file()
-    _clear_session()
+    _remove_prompt_file(owner_id)
+    _clear_session(owner_id)
 
 
-def ask_and_wait_for_file_no_clear(prompt: str, output_file: str, max_wait_seconds: int = MAX_WAIT_SECONDS):
+def ask_and_wait_for_file_no_clear(owner_id: int, prompt: str, output_file: str, max_wait_seconds: int = MAX_WAIT_SECONDS):
     """Same as ask_and_wait_for_file but leaves the session's context intact
     afterward — used by chat_ask.py so a multi-turn conversation can build on
     earlier turns. Caller is responsible for clearing the session explicitly
     when a conversation starts (see chat_ask.start_chat)."""
     if os.path.exists(output_file):
         os.remove(output_file)
-    _send_via_file_and_enter(prompt)
+    _send_via_file_and_enter(owner_id, prompt)
     _wait_for_stable_file(output_file, max_wait_seconds)
-    _remove_prompt_file()
+    _remove_prompt_file(owner_id)
 
 
 if __name__ == "__main__":
     import sys
 
-    ask_and_wait_for_file(sys.stdin.read(), sys.argv[1])
+    if len(sys.argv) != 3:
+        print("Usage: session_ask.py <owner_id> <output_file>  (prompt on stdin)", file=sys.stderr)
+        sys.exit(1)
+    ask_and_wait_for_file(int(sys.argv[1]), sys.stdin.read(), sys.argv[2])
     print("done")
