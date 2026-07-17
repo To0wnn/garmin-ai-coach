@@ -381,5 +381,21 @@ def build_metrics() -> dict:
     }
 
 
+def vo2max_series(days: int) -> dict:
+    """SQLite-backed replacement for coach.py's vo2max_series() — the dashboard's
+    trend-chart data (full reading-by-reading history, not just now-vs-28d-ago).
+    Only non-null readings returned (both fields are sparse, same as coach.py's
+    version — Garmin doesn't compute VO2max every day)."""
+    start = _date(days - 1)
+    result = {}
+    for sport, col in (("running", "vo2max_run"), ("cycling", "vo2max_cycle")):
+        rows = db.query(
+            f"SELECT date, {col} FROM max_metrics WHERE date >= ? AND {col} IS NOT NULL ORDER BY date ASC",
+            (start,),
+        )
+        result[sport] = [{"date": r["date"], "value": r[col]} for r in rows]
+    return result
+
+
 if __name__ == "__main__":
     print(json.dumps(build_metrics(), indent=2, ensure_ascii=False))

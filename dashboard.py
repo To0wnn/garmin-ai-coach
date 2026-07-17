@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Read-only local-network dashboard for garmin-ai-coach: shows the latest
 advice, advice history, core metric charts, recent activities, and an
-adherence timeline (advice vs. what was actually done). Reuses coach.py's
-existing InfluxDB query functions and coach_log — no separate query layer."""
+adherence timeline (advice vs. what was actually done). Uses coach_sqlite.py's
+SQLite-backed query functions and coach_log — see coach_sqlite.py's own
+docstring for why the InfluxDB-backed coach.py is still imported alongside it
+(shared prompt/Discord/locking logic, and coach.py's own InfluxDB path is kept
+running as a fallback net during the Stage 6 soak period)."""
 
 import fcntl
 import json
@@ -15,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import chat_ask
 import coach
+import coach_sqlite
 import db
 import garmin_client
 import garmin_sync
@@ -24,7 +28,13 @@ from providers import PROVIDERS, get_provider
 
 DASHBOARD_PORT = int(os.environ.get("DASHBOARD_PORT", "8420"))
 HTML_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html")
-COACH_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "coach.py")
+# Cutover: the dashboard's "Run now" button and build_payload() now drive the
+# SQLite-backed pipeline (coach_sqlite.py) instead of coach.py's InfluxDB one —
+# coach.py itself, and the garmin-grafana/InfluxDB stack it reads from, are
+# deliberately left running untouched as a fallback net during the Stage 6
+# soak period (see project plan/memory), not actively used by the dashboard
+# anymore. Reverting is a one-line change back to coach.py if needed.
+COACH_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "coach_sqlite.py")
 
 # In-memory lock so a manual "run now" click can't overlap the daily cron run
 # (or a second click) — both ultimately talk to the same single tmux/claude
@@ -151,9 +161,9 @@ def _run_coach_background():
 
 
 def build_payload() -> dict:
-    history = coach.read_coach_log()
-    metrics = coach.build_metrics()
-    metrics["vo2max_series"] = coach.vo2max_series(28)
+    history = coach_sqlite.read_coach_log()
+    metrics = coach_sqlite.build_metrics()
+    metrics["vo2max_series"] = coach_sqlite.vo2max_series(28)
     return {
         "latest": history[-1] if history else None,
         "history": history,
@@ -394,7 +404,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"reply": None, "paused": True, "reason": "a scheduled run is in progress"}, status=409)
                 return
             try:
-                prompt = f"{coach.build_chat_context()}\n\nThe user asks: {message}" if first else message
+                prompt = f"{coach_sqlite.build_chat_context()}\n\nThe user asks: {message}" if first else message
                 provider = settings_module.read_settings()["provider"]
                 write_tool_name = get_provider(provider)["write_tool_name"]
                 reply = chat_ask.send_chat_message(prompt, write_tool_name)

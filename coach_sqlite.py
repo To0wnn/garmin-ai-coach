@@ -49,6 +49,12 @@ def build_metrics() -> dict:
     return build_metrics_sqlite.build_metrics()
 
 
+def vo2max_series(days: int) -> dict:
+    """SQLite-backed replacement for coach.py's vo2max_series() — used by
+    dashboard.py's /api/data for the VO2max trend chart."""
+    return build_metrics_sqlite.vo2max_series(days)
+
+
 def _activities_since_sqlite(start_date: str) -> list[dict]:
     """SQLite-backed replacement for coach.py's _activities_since(), needed
     here for _backfill_adherence_sqlite() below (coach.py's own version takes
