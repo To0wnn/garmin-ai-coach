@@ -86,6 +86,18 @@ def authenticate(username: str, password: str) -> dict | None:
     return user
 
 
+def change_password(user_id: int, current_password: str, new_password: str) -> bool:
+    """Requires the current password (not just being logged in) so a
+    hijacked session can't silently lock the real owner out by changing it
+    to something else. Returns False if current_password doesn't match."""
+    user = get_user_by_id(user_id)
+    if user is None or not verify_password(current_password, user["password_hash"], user["password_salt"]):
+        return False
+    new_hash, new_salt = hash_password(new_password)
+    db.execute("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?", (new_hash, new_salt, user_id))
+    return True
+
+
 def list_users() -> list[dict]:
     """For the admin user-list page — deliberately excludes password_hash/
     password_salt from what's typically shown, but callers get the full row

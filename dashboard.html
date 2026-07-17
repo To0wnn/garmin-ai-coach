@@ -386,11 +386,41 @@
           <div id="garmin-body">Loading…</div>
         </div>
 
+        <div class="field-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px;">
+          <label>Change password</label>
+          <input id="pw-current" type="password" placeholder="Current password" style="margin-top: 8px;" autocomplete="current-password">
+          <input id="pw-new" type="password" placeholder="New password (min 8 characters)" style="margin-top: 8px;" autocomplete="new-password">
+          <div class="settings-msg" id="pw-msg"></div>
+          <button class="btn" id="pw-change-btn" type="button" style="margin-top: 8px;">Change password</button>
+        </div>
+
+        <div class="field-row" id="admin-link-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px;" hidden>
+          <label>Admin</label>
+          <button class="btn" id="open-admin-btn" type="button">Manage users</button>
+        </div>
+
         <div class="settings-msg" id="settings-msg"></div>
 
         <div class="modal-actions">
           <button class="btn" id="settings-cancel" type="button">Cancel</button>
           <button class="btn btn-primary" id="settings-save" type="button">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="admin-modal" hidden>
+      <div class="modal">
+        <div class="modal-head">
+          <h2>Manage users</h2>
+          <button class="modal-close" id="admin-close" type="button">
+            <svg class="ic"><use href="#i-x"/></svg>
+          </button>
+        </div>
+        <div id="admin-users-body">Loading…</div>
+        <div class="field-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px;">
+          <label>Invite a new user</label>
+          <button class="btn btn-primary" id="admin-invite-btn" type="button">Generate invite link</button>
+          <div id="admin-invite-result" style="margin-top: 8px;"></div>
         </div>
       </div>
     </div>
@@ -1221,6 +1251,7 @@ async function openSettingsModal() {
   $("#set-webhook").value = s.discord_webhook_url || "";
   if (!loginFlowInProgress) refreshAuthBox();
   if (!garminFlowInProgress) refreshGarminBody();
+  $("#admin-link-row").hidden = !isAdmin;
 }
 
 settingsBtn.addEventListener("click", openSettingsModal);
@@ -1647,6 +1678,105 @@ function inviteTokenFromPath() {
   return m ? m[1] : null;
 }
 
+// ---------- change password ----------
+$("#pw-change-btn").addEventListener("click", async () => {
+  const msg = $("#pw-msg");
+  const btn = $("#pw-change-btn");
+  const current = $("#pw-current").value;
+  const next = $("#pw-new").value;
+  msg.textContent = "";
+  msg.className = "settings-msg";
+  btn.disabled = true;
+  btn.textContent = "Changing…";
+  try {
+    const res = await fetch("/api/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: current, new_password: next }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.changed) {
+      msg.textContent = data.reason || "Could not change password.";
+      msg.className = "settings-msg err";
+    } else {
+      msg.textContent = "Password changed.";
+      msg.className = "settings-msg ok";
+      $("#pw-current").value = "";
+      $("#pw-new").value = "";
+    }
+  } catch (e) {
+    msg.textContent = "Could not reach the server.";
+    msg.className = "settings-msg err";
+  }
+  btn.disabled = false;
+  btn.textContent = "Change password";
+});
+
+// ---------- admin: manage users ----------
+const adminModal = $("#admin-modal");
+const adminUsersBody = $("#admin-users-body");
+
+async function openAdminModal() {
+  adminModal.hidden = false;
+  $("#admin-invite-result").textContent = "";
+  await refreshAdminUsers();
+}
+
+async function refreshAdminUsers() {
+  adminUsersBody.textContent = "Loading…";
+  let data;
+  try {
+    data = await (await fetch("/api/admin/users")).json();
+  } catch (e) {
+    adminUsersBody.textContent = "Could not load users.";
+    return;
+  }
+  if (data.error) {
+    adminUsersBody.textContent = data.error;
+    return;
+  }
+  adminUsersBody.innerHTML = "";
+  for (const u of data.users || []) {
+    const row = el("div");
+    row.style.marginBottom = "8px";
+    row.style.paddingBottom = "8px";
+    row.style.borderBottom = "1px solid var(--border)";
+    const created = u.created_at ? new Date(u.created_at).toLocaleDateString() : "";
+    row.append(el("div", null, `${u.username}${u.is_admin ? " (admin)" : ""} — joined ${created}`));
+    adminUsersBody.append(row);
+  }
+  if (!(data.users || []).length) adminUsersBody.textContent = "No users found.";
+}
+
+$("#open-admin-btn").addEventListener("click", openAdminModal);
+$("#admin-close").addEventListener("click", () => { adminModal.hidden = true; });
+adminModal.addEventListener("click", (e) => { if (e.target === adminModal) adminModal.hidden = true; });
+
+$("#admin-invite-btn").addEventListener("click", async () => {
+  const btn = $("#admin-invite-btn");
+  const resultBox = $("#admin-invite-result");
+  btn.disabled = true;
+  btn.textContent = "Generating…";
+  resultBox.textContent = "";
+  try {
+    const data = await (await fetch("/api/admin/invite", { method: "POST" })).json();
+    if (data.register_path) {
+      const url = window.location.origin + data.register_path;
+      const link = el("a", "auth-link", url);
+      link.href = url;
+      resultBox.append(el("div", null, "Share this link with the new user:"), link);
+    } else {
+      resultBox.textContent = data.error || "Could not generate invite.";
+    }
+  } catch (e) {
+    resultBox.textContent = "Could not reach the server.";
+  }
+  btn.disabled = false;
+  btn.textContent = "Generate invite link";
+});
+
+let isAdmin = false;
+
 async function boot() {
   let who;
   try {
@@ -1658,6 +1788,7 @@ async function boot() {
   if (who.logged_in && !inviteToken) {
     authScreen.hidden = true;
     mainWrap.hidden = false;
+    isAdmin = !!who.is_admin;
     $("#whoami").textContent = who.username + (who.is_admin ? " (admin)" : "");
     load();
     setInterval(load, 5 * 60 * 1000);

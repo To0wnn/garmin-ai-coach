@@ -342,6 +342,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_register()
         elif self.path == "/api/dashboard-logout":
             self._handle_dashboard_logout()
+        elif self.path == "/api/change-password":
+            self._handle_change_password()
         elif self.path == "/api/run":
             self._handle_run()
         elif self.path == "/api/settings":
@@ -673,6 +675,22 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body_bytes)))
         self.end_headers()
         self.wfile.write(body_bytes)
+
+    def _handle_change_password(self):
+        body = self._read_json_body()
+        current_password = body.get("current_password") or ""
+        new_password = body.get("new_password") or ""
+        if not current_password or not new_password:
+            self._send_json({"changed": False, "reason": "current_password and new_password required"}, status=400)
+            return
+        if len(new_password) < 8:
+            self._send_json({"changed": False, "reason": "new password must be at least 8 characters"}, status=400)
+            return
+        ok = auth.change_password(self.current_user["id"], current_password, new_password)
+        if not ok:
+            self._send_json({"changed": False, "reason": "current password is incorrect"}, status=400)
+            return
+        self._send_json({"changed": True})
 
     def _handle_register(self):
         body = self._read_json_body()
