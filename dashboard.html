@@ -289,6 +289,7 @@
     <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
+    <symbol id="i-garmin" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 12l3 3 6-6"/></symbol>
   </svg>
 
   <div class="wrap">
@@ -299,6 +300,9 @@
         <span id="updated"></span>
         <button id="chat-btn" type="button" title="Ask the coach">
           <svg class="ic"><use href="#i-chat"/></svg>
+        </button>
+        <button id="garmin-btn" type="button" title="Garmin connection">
+          <svg class="ic"><use href="#i-garmin"/></svg>
         </button>
         <button id="settings-btn" type="button" title="Settings">
           <svg class="ic"><use href="#i-settings"/></svg>
@@ -369,6 +373,18 @@
             <svg class="ic"><use href="#i-send"/></svg>
           </button>
         </div>
+      </div>
+    </div>
+
+    <div class="modal-overlay" id="garmin-modal" hidden>
+      <div class="modal">
+        <div class="modal-head">
+          <h2>Garmin connection</h2>
+          <button class="modal-close" id="garmin-close" type="button">
+            <svg class="ic"><use href="#i-x"/></svg>
+          </button>
+        </div>
+        <div id="garmin-body">Loading…</div>
       </div>
     </div>
 
@@ -1296,6 +1312,318 @@ $("#chat-close").addEventListener("click", closeChatModal);
 chatModal.addEventListener("click", (e) => { if (e.target === chatModal) closeChatModal(); });
 chatSendBtn.addEventListener("click", sendChatMessage);
 chatInput.addEventListener("keydown", (e) => { if (e.key === "Enter") sendChatMessage(); });
+
+// ---------- Garmin connection modal ----------
+const garminModal = $("#garmin-modal");
+const garminBtn = $("#garmin-btn");
+const garminBody = $("#garmin-body");
+let garminFlowInProgress = false;  // set during password/MFA entry or an active backfill —
+                                    // prevents a reopen/re-render from wiping the in-progress screen
+let backfillPollTimer = null;
+
+function closeGarminModal() {
+  garminModal.hidden = true;
+  clearTimeout(backfillPollTimer);
+}
+
+async function openGarminModal() {
+  garminModal.hidden = false;
+  if (!garminFlowInProgress) await refreshGarminBody();
+}
+
+async function refreshGarminBody() {
+  garminBody.textContent = "Checking…";
+  let status;
+  try {
+    status = await (await fetch("/api/garmin/status")).json();
+  } catch (e) {
+    garminBody.textContent = "Could not check Garmin connection status.";
+    return;
+  }
+  garminBody.innerHTML = "";
+
+  if (!status.logged_in) {
+    renderGarminLoginForm();
+    return;
+  }
+
+  const row = el("div", "auth-status");
+  const dot = el("span", "auth-dot ok");
+  row.append(dot, "Connected");
+  garminBody.append(row);
+  if (status.last_sync_at) {
+    garminBody.append(el("div", null, "Last sync: " + new Date(status.last_sync_at).toLocaleString()));
+  }
+
+  const disconnectBtn = el("button", "btn", "Disconnect");
+  disconnectBtn.type = "button";
+  disconnectBtn.style.marginTop = "8px";
+  disconnectBtn.addEventListener("click", async () => {
+    disconnectBtn.disabled = true;
+    disconnectBtn.textContent = "Disconnecting…";
+    await fetch("/api/garmin/logout", { method: "POST" });
+    refreshGarminBody();
+  });
+  garminBody.append(disconnectBtn);
+
+  const backfill = status.backfill;
+  if (backfill && backfill.running !== false && backfill.done < backfill.total) {
+    renderBackfillProgress(backfill);
+  } else {
+    renderBackfillSetup();
+  }
+}
+
+function renderGarminLoginForm() {
+  garminBody.append(el("div", null, "Connect your Garmin account to sync your own training data (replacing the InfluxDB/garmin-grafana pipeline)."));
+
+  const emailInput = document.createElement("input");
+  emailInput.type = "email";
+  emailInput.placeholder = "Garmin email";
+  emailInput.style.marginTop = "10px";
+  emailInput.style.width = "100%";
+  emailInput.style.background = "var(--surface-2)";
+  emailInput.style.border = "1px solid var(--border)";
+  emailInput.style.color = "var(--ink)";
+  emailInput.style.borderRadius = "var(--radius-s)";
+  emailInput.style.padding = "8px 10px";
+  emailInput.style.fontSize = "13px";
+  garminBody.append(emailInput);
+
+  const passInput = document.createElement("input");
+  passInput.type = "password";
+  passInput.placeholder = "Password";
+  passInput.style.marginTop = "8px";
+  passInput.style.width = "100%";
+  passInput.style.background = "var(--surface-2)";
+  passInput.style.border = "1px solid var(--border)";
+  passInput.style.color = "var(--ink)";
+  passInput.style.borderRadius = "var(--radius-s)";
+  passInput.style.padding = "8px 10px";
+  passInput.style.fontSize = "13px";
+  garminBody.append(passInput);
+
+  const connectBtn = el("button", "btn btn-primary", "Connect");
+  connectBtn.type = "button";
+  connectBtn.style.marginTop = "10px";
+  const errBox = el("div", null, "");
+  errBox.style.marginTop = "8px";
+  errBox.style.color = "var(--crit)";
+  errBox.style.fontSize = "12px";
+
+  connectBtn.addEventListener("click", async () => {
+    connectBtn.disabled = true;
+    connectBtn.textContent = "Connecting…";
+    errBox.textContent = "";
+    let result;
+    try {
+      result = await (await fetch("/api/garmin/login/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailInput.value.trim(), password: passInput.value }),
+      })).json();
+    } catch (e) {
+      errBox.textContent = "Could not reach the server.";
+      connectBtn.disabled = false;
+      connectBtn.textContent = "Connect";
+      return;
+    }
+    if (result.error) {
+      errBox.textContent = result.error;
+      connectBtn.disabled = false;
+      connectBtn.textContent = "Connect";
+      return;
+    }
+    if (result.needs_mfa) {
+      renderGarminMfaForm();
+      return;
+    }
+    garminFlowInProgress = false;
+    refreshGarminBody();
+  });
+  garminBody.append(connectBtn, errBox);
+}
+
+function renderGarminMfaForm() {
+  garminFlowInProgress = true;
+  garminBody.innerHTML = "";
+  garminBody.append(el("div", null, "Garmin sent a verification code (email or SMS) — enter it below:"));
+
+  const codeInput = document.createElement("input");
+  codeInput.type = "text";
+  codeInput.placeholder = "Verification code";
+  codeInput.style.marginTop = "10px";
+  codeInput.style.width = "100%";
+  codeInput.style.background = "var(--surface-2)";
+  codeInput.style.border = "1px solid var(--border)";
+  codeInput.style.color = "var(--ink)";
+  codeInput.style.borderRadius = "var(--radius-s)";
+  codeInput.style.padding = "8px 10px";
+  codeInput.style.fontSize = "13px";
+  garminBody.append(codeInput);
+
+  const submitBtn = el("button", "btn btn-primary", "Verify");
+  submitBtn.type = "button";
+  submitBtn.style.marginTop = "10px";
+  const errBox = el("div", null, "");
+  errBox.style.marginTop = "8px";
+  errBox.style.color = "var(--crit)";
+  errBox.style.fontSize = "12px";
+
+  submitBtn.addEventListener("click", async () => {
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Checking…";
+    errBox.textContent = "";
+    let result;
+    try {
+      result = await (await fetch("/api/garmin/login/mfa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: codeInput.value.trim() }),
+      })).json();
+    } catch (e) {
+      errBox.textContent = "Could not reach the server.";
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Verify";
+      return;
+    }
+    if (!result.logged_in) {
+      errBox.textContent = result.error || "Code not accepted — try again.";
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Verify";
+      return;
+    }
+    garminFlowInProgress = false;
+    refreshGarminBody();
+  });
+  garminBody.append(submitBtn, errBox);
+}
+
+function renderBackfillSetup() {
+  const wrap = el("div");
+  wrap.style.marginTop = "16px";
+  wrap.style.paddingTop = "16px";
+  wrap.style.borderTop = "1px solid var(--border)";
+  wrap.append(el("div", "label", "Import history"));
+
+  const dateInput = document.createElement("input");
+  dateInput.type = "date";
+  dateInput.style.marginTop = "8px";
+  dateInput.style.width = "100%";
+  dateInput.style.background = "var(--surface-2)";
+  dateInput.style.border = "1px solid var(--border)";
+  dateInput.style.color = "var(--ink)";
+  dateInput.style.borderRadius = "var(--radius-s)";
+  dateInput.style.padding = "8px 10px";
+  dateInput.style.fontSize = "13px";
+  const today = new Date();
+  dateInput.max = today.toISOString().slice(0, 10);
+  const suggested = new Date(today);
+  suggested.setDate(suggested.getDate() - 365);
+  dateInput.value = suggested.toISOString().slice(0, 10);
+  wrap.append(dateInput);
+
+  const hint = el("div", null, "Detailed body-battery/HRV curves are only available for the last ~6 months; daily summaries and activities go back further.");
+  hint.style.fontSize = "12px";
+  hint.style.color = "var(--ink-3)";
+  hint.style.marginTop = "6px";
+  wrap.append(hint);
+
+  const presetRow = el("div");
+  presetRow.style.display = "flex";
+  presetRow.style.gap = "6px";
+  presetRow.style.marginTop = "8px";
+  for (const [label, days] of [["90 days", 90], ["12 months", 365], ["2 years", 730]]) {
+    const btn = el("button", "btn", label);
+    btn.type = "button";
+    btn.style.fontSize = "12px";
+    btn.style.padding = "5px 10px";
+    btn.addEventListener("click", () => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - days);
+      dateInput.value = d.toISOString().slice(0, 10);
+    });
+    presetRow.append(btn);
+  }
+  wrap.append(presetRow);
+
+  const startBtn = el("button", "btn btn-primary", "Start import");
+  startBtn.type = "button";
+  startBtn.style.marginTop = "10px";
+  startBtn.addEventListener("click", async () => {
+    startBtn.disabled = true;
+    startBtn.textContent = "Starting…";
+    const endDate = today.toISOString().slice(0, 10);
+    try {
+      const res = await fetch("/api/garmin/backfill/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ start_date: dateInput.value, end_date: endDate }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.started) {
+        wrap.append(el("div", null, data.reason || "Could not start import."));
+        startBtn.disabled = false;
+        startBtn.textContent = "Start import";
+        return;
+      }
+    } catch (e) {
+      wrap.append(el("div", null, "Could not reach the server."));
+      startBtn.disabled = false;
+      startBtn.textContent = "Start import";
+      return;
+    }
+    garminFlowInProgress = true;
+    refreshGarminBody();
+  });
+  wrap.append(startBtn);
+  garminBody.append(wrap);
+}
+
+function renderBackfillProgress(backfill) {
+  garminFlowInProgress = true;
+  const wrap = el("div");
+  wrap.style.marginTop = "16px";
+  wrap.style.paddingTop = "16px";
+  wrap.style.borderTop = "1px solid var(--border)";
+  const pct = backfill.total ? Math.round((backfill.done / backfill.total) * 100) : 0;
+  wrap.append(el("div", "label", "Importing history"));
+  const meter = el("div", "meter");
+  meter.style.marginTop = "8px";
+  const bar = el("i");
+  bar.style.width = pct + "%";
+  bar.style.setProperty("--z", "var(--run)");
+  meter.append(bar);
+  wrap.append(meter);
+  wrap.append(el("div", null, `${backfill.cursor_date || ""} — day ${backfill.done} of ${backfill.total}`));
+  garminBody.append(wrap);
+  pollBackfillStatus();
+}
+
+async function pollBackfillStatus() {
+  let status;
+  try {
+    status = await (await fetch("/api/garmin/backfill-status")).json();
+  } catch (e) {
+    backfillPollTimer = setTimeout(pollBackfillStatus, 3000);
+    return;
+  }
+  if (status.running) {
+    backfillPollTimer = setTimeout(pollBackfillStatus, 3000);
+    if (!garminModal.hidden) renderBackfillProgress(status.progress || {});
+    return;
+  }
+  garminFlowInProgress = false;
+  if (status.error) {
+    garminBody.append(el("div", null, "Import stopped: " + status.error));
+  } else if (!garminModal.hidden) {
+    refreshGarminBody();
+  }
+}
+
+garminBtn.addEventListener("click", openGarminModal);
+$("#garmin-close").addEventListener("click", closeGarminModal);
+garminModal.addEventListener("click", (e) => { if (e.target === garminModal) closeGarminModal(); });
 
 load();
 setInterval(load, 5 * 60 * 1000);

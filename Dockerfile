@@ -54,6 +54,7 @@ COPY settings.py /app/settings.py
 COPY chat_ask.py /app/chat_ask.py
 COPY db.py /app/db.py
 COPY garmin_client.py /app/garmin_client.py
+COPY garmin_sync.py /app/garmin_sync.py
 COPY dashboard.py /app/dashboard.py
 COPY dashboard.html /app/dashboard.html
 COPY entrypoint.sh /app/entrypoint.sh

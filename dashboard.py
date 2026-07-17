@@ -10,11 +10,14 @@ import os
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import chat_ask
 import coach
+import db
+import garmin_client
+import garmin_sync
 import session_manager
 import settings as settings_module
 from providers import PROVIDERS, get_provider
@@ -47,6 +50,15 @@ _run_state = {"running": False, "error": None}
 # /tmp/coach.lock — see _handle_chat_message below.
 _chat_lock = threading.Lock()
 
+# Backfill is its own lock, separate from _run_lock/_chat_lock — it's a long,
+# multi-day-history fetch running in its own background thread, unrelated to the
+# AI-provider tmux session those two locks protect. The ongoing 5-min sync thread
+# (started below) checks _backfill_lock before each cycle and skips (not blocks)
+# if a backfill is in progress, since SQLite's WAL mode handles concurrent readers
+# fine but not two concurrent writers stepping on the same recent-day rows.
+_backfill_lock = threading.Lock()
+_backfill_state = {"running": False, "error": None}
+
 
 def _try_coach_lock():
     """Non-blocking attempt at the SAME cross-process lock coach.py itself takes
@@ -65,6 +77,52 @@ def _try_coach_lock():
         fd.close()
         return None
     return fd
+
+
+def _run_backfill_background(start_date: str, end_date: str):
+    _backfill_state["running"] = True
+    _backfill_state["error"] = None
+    try:
+        garmin_sync.run_backfill(start_date, end_date)
+    except garmin_client.NotLoggedInError as e:
+        _backfill_state["error"] = str(e)
+    except Exception as e:
+        _backfill_state["error"] = str(e)
+    finally:
+        _backfill_state["running"] = False
+
+
+# Ongoing sync: an in-process scheduler thread rather than a new cron entry.
+# This project has TWO documented real cron incidents already (a missing PATH=
+# in /etc/cron.d/coach requiring an explicit export, and a stuck cross-process
+# flock from a fragmented tmux paste) — a thread inside the already-correctly-
+# configured dashboard.py process sidesteps cron's environment-inheritance
+# problems entirely and needs no new .env.runtime entry.
+SYNC_INTERVAL_SECONDS = 300
+
+
+def _sync_loop():
+    while True:
+        time.sleep(SYNC_INTERVAL_SECONDS)
+        if _backfill_lock.locked():
+            continue  # let the (rarer, longer) backfill have the write path this cycle
+        try:
+            client = garmin_client.get_client()
+        except garmin_client.NotLoggedInError:
+            continue
+        except Exception:
+            continue
+        try:
+            today = datetime.now(coach.LOCAL_TZ).date()
+            garmin_sync.sync_day(client, today.isoformat(), intraday=True)
+            # Also re-sync yesterday — catches a watch sync that finishes
+            # processing after local midnight (the same concern
+            # wait_for_fresh_sync() used to guess at with a bounded sleep;
+            # here we just re-pull instead of waiting and hoping).
+            garmin_sync.sync_day(client, (today - timedelta(days=1)).isoformat(), intraday=True)
+            db.set_sync_state("last_sync_at", datetime.now(coach.LOCAL_TZ).isoformat())
+        except Exception:
+            pass  # best-effort — next cycle tries again, no crash-loop
 
 
 def _run_coach_background():
@@ -125,6 +183,19 @@ class Handler(BaseHTTPRequestHandler):
                 "session_alive": session_manager.is_session_alive(),
                 "all": {name: session_manager.is_logged_in(name) for name in PROVIDERS},
             })
+        elif self.path == "/api/garmin/status":
+            status = garmin_client.login_status()
+            self._send_json({
+                "logged_in": status["logged_in"],
+                "last_sync_at": db.get_sync_state("last_sync_at"),
+                "backfill": db.get_sync_state(garmin_sync.BACKFILL_PROGRESS_KEY),
+            })
+        elif self.path == "/api/garmin/backfill-status":
+            self._send_json({
+                "running": _backfill_state["running"],
+                "error": _backfill_state["error"],
+                "progress": db.get_sync_state(garmin_sync.BACKFILL_PROGRESS_KEY),
+            })
         else:
             self.send_error(404)
 
@@ -143,6 +214,14 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_chat_start()
         elif self.path == "/api/chat/message":
             self._handle_chat_message()
+        elif self.path == "/api/garmin/login/start":
+            self._handle_garmin_login_start()
+        elif self.path == "/api/garmin/login/mfa":
+            self._handle_garmin_login_mfa()
+        elif self.path == "/api/garmin/logout":
+            self._handle_garmin_logout()
+        elif self.path == "/api/garmin/backfill/start":
+            self._handle_garmin_backfill_start()
         else:
             self.send_error(404)
 
@@ -321,6 +400,62 @@ class Handler(BaseHTTPRequestHandler):
             _chat_lock.release()
         self._send_json({"reply": reply, "paused": False})
 
+    def _handle_garmin_login_start(self):
+        body = self._read_json_body()
+        email = (body.get("email") or "").strip()
+        password = body.get("password") or ""
+        if not email or not password:
+            self._send_json({"error": "email and password required"}, status=400)
+            return
+        result = garmin_client.start_login(email, password)
+        status = 200 if result["error"] is None else 400
+        self._send_json(result, status)
+
+    def _handle_garmin_login_mfa(self):
+        body = self._read_json_body()
+        code = (body.get("code") or "").strip()
+        if not code:
+            self._send_json({"error": "no code provided"}, status=400)
+            return
+        result = garmin_client.submit_mfa(code)
+        status = 200 if result["logged_in"] else 400
+        self._send_json(result, status)
+
+    def _handle_garmin_logout(self):
+        garmin_client.logout()
+        self._send_json({"logged_out": True})
+
+    def _handle_garmin_backfill_start(self):
+        body = self._read_json_body()
+        start_date = body.get("start_date")
+        end_date = body.get("end_date")
+        if not start_date or not end_date:
+            self._send_json({"started": False, "reason": "start_date and end_date required"}, status=400)
+            return
+        if not garmin_client.login_status()["logged_in"]:
+            self._send_json({"started": False, "reason": "not logged in to Garmin"}, status=400)
+            return
+        if _backfill_lock.locked() or _backfill_state["running"]:
+            self._send_json({"started": False, "reason": "a backfill is already running"}, status=409)
+            return
+        if not _backfill_lock.acquire(blocking=False):
+            self._send_json({"started": False, "reason": "a backfill is already running"}, status=409)
+            return
+        try:
+            threading.Thread(
+                target=self._run_backfill_and_release, args=(start_date, end_date), daemon=True
+            ).start()
+        except Exception:
+            _backfill_lock.release()
+            raise
+        self._send_json({"started": True})
+
+    def _run_backfill_and_release(self, start_date, end_date):
+        try:
+            _run_backfill_background(start_date, end_date)
+        finally:
+            _backfill_lock.release()
+
     def _serve_html(self):
         with open(HTML_FILE, "rb") as f:
             body = f.read()
@@ -349,6 +484,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    db.init_schema()
+    threading.Thread(target=_sync_loop, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", DASHBOARD_PORT), Handler)
     print(f"Dashboard listening on :{DASHBOARD_PORT}")
     server.serve_forever()
