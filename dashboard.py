@@ -101,28 +101,36 @@ def _run_backfill_background(start_date: str, end_date: str):
 SYNC_INTERVAL_SECONDS = 300
 
 
+def _sync_once():
+    if _backfill_lock.locked():
+        return  # let the (rarer, longer) backfill have the write path this cycle
+    try:
+        client = garmin_client.get_client()
+    except garmin_client.NotLoggedInError:
+        return
+    except Exception:
+        return
+    try:
+        today = datetime.now(coach.LOCAL_TZ).date()
+        garmin_sync.sync_day(client, today.isoformat(), intraday=True)
+        # Also re-sync yesterday — catches a watch sync that finishes
+        # processing after local midnight (the same concern
+        # wait_for_fresh_sync() used to guess at with a bounded sleep;
+        # here we just re-pull instead of waiting and hoping).
+        garmin_sync.sync_day(client, (today - timedelta(days=1)).isoformat(), intraday=True)
+        db.set_sync_state("last_sync_at", datetime.now(coach.LOCAL_TZ).isoformat())
+    except Exception:
+        pass  # best-effort — next cycle tries again, no crash-loop
+
+
 def _sync_loop():
+    # Sync immediately on startup (not just after the first 5-minute wait) — every
+    # dashboard.py restart (deploy, crash-recovery) should catch up right away
+    # rather than leaving the dashboard showing stale data for up to 5 minutes.
+    _sync_once()
     while True:
         time.sleep(SYNC_INTERVAL_SECONDS)
-        if _backfill_lock.locked():
-            continue  # let the (rarer, longer) backfill have the write path this cycle
-        try:
-            client = garmin_client.get_client()
-        except garmin_client.NotLoggedInError:
-            continue
-        except Exception:
-            continue
-        try:
-            today = datetime.now(coach.LOCAL_TZ).date()
-            garmin_sync.sync_day(client, today.isoformat(), intraday=True)
-            # Also re-sync yesterday — catches a watch sync that finishes
-            # processing after local midnight (the same concern
-            # wait_for_fresh_sync() used to guess at with a bounded sleep;
-            # here we just re-pull instead of waiting and hoping).
-            garmin_sync.sync_day(client, (today - timedelta(days=1)).isoformat(), intraday=True)
-            db.set_sync_state("last_sync_at", datetime.now(coach.LOCAL_TZ).isoformat())
-        except Exception:
-            pass  # best-effort — next cycle tries again, no crash-loop
+        _sync_once()
 
 
 def _run_coach_background():
