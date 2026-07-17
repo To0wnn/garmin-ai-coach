@@ -100,3 +100,14 @@ AI writes the advice to a file, which gets posted to Discord. After every run
 the session is reset (`/clear`) so context doesn't build up over time. Garmin
 data syncs into a local SQLite database every 5 minutes — no third-party
 sync service in the loop.
+
+## Credits
+
+- [arpanghosh8453/garmin-grafana](https://github.com/arpanghosh8453/garmin-grafana) —
+  this project originally synced through garmin-grafana's InfluxDB before
+  moving to its own direct Garmin Connect integration; its field mappings
+  and sync approach were a useful reference along the way.
+- [leonzzz435/garmin-ai-coach](https://github.com/leonzzz435/garmin-ai-coach) —
+  a much larger multi-agent take on the same idea; the evidence-based,
+  cite-a-real-number prompting approach used here was inspired by it (the
+  multi-agent architecture itself was deliberately not adopted).
