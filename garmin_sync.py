@@ -138,7 +138,14 @@ def _sync_training_readiness(client, date: str) -> bool:
 
 def _sync_training_status(client, date: str) -> bool:
     ts = garmin_client.paced_call(client.get_training_status, date)
-    latest_map = (ts or {}).get("latestTrainingStatusData") or {}
+    # latestTrainingStatusData is nested under mostRecentTrainingStatus, NOT at the
+    # top level — confirmed by cross-referencing garmin-grafana's own source
+    # (garmin_fetch.py's get_training_status) after this parity check found it
+    # consistently empty; reading it from the top level (an earlier assumption made
+    # without checking a working reference implementation) silently returned {}
+    # every time despite the underlying data genuinely being present.
+    mrts = (ts or {}).get("mostRecentTrainingStatus") or {}
+    latest_map = mrts.get("latestTrainingStatusData") or {}
     if not latest_map:
         return False
     # Keyed by deviceId — take the entry marked primaryTrainingDevice if present,
@@ -278,13 +285,19 @@ def _sync_lactate_threshold(client, date: str) -> bool:
     speed_hr = (lt or {}).get("speed_and_heart_rate") or {}
     if not speed_hr.get("heartRate"):
         return False
+    # speed_hr["speed"] is ALREADY seconds-per-meter (pace), not m/s speed —
+    # verified against a real response: 0.34166571 -> 5:42 min/km directly
+    # (matching the value later confirmed against a known-good comparison run),
+    # whereas treating it as m/s and inverting gives an absurd ~48:47 min/km.
+    # Same field semantics as the old InfluxDB SpeedThreshold_RUNNING coach.py
+    # already relied on — no inversion needed, just store it as-is.
     db.upsert(
         "lactate_threshold",
         ["date"],
         {
             "date": date,
             "hr_threshold_running": speed_hr.get("heartRate"),
-            "speed_threshold_sec_per_m": (1 / speed_hr["speed"]) if speed_hr.get("speed") else None,
+            "speed_threshold_sec_per_m": speed_hr.get("speed"),
             "synced_at": _now_iso(),
             "raw_json": json.dumps(lt),
         },
