@@ -108,6 +108,32 @@
   .settings-msg.err { color: var(--crit); }
   .settings-msg.ok { color: var(--good); }
 
+  /* settings page */
+  .settings-layout { display: flex; gap: 32px; align-items: flex-start; }
+  .settings-nav { flex: none; width: 180px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 32px; }
+  .settings-nav-btn {
+    display: flex; align-items: center; gap: 10px; text-align: left; background: none; border: none;
+    color: var(--ink-2); border-radius: var(--radius-s); padding: 9px 12px; font-size: 13px; font-weight: 600;
+    cursor: pointer; font-family: inherit;
+  }
+  .settings-nav-btn:hover { background: var(--surface); color: var(--ink); }
+  .settings-nav-btn.active { background: var(--surface-2); color: var(--ink); }
+  .settings-nav-btn .ic { width: 15px; height: 15px; }
+  .settings-content { flex: 1; min-width: 0; }
+  .settings-pane { display: none; }
+  .settings-pane.active { display: block; }
+  .settings-pane h2 { font-size: 16px; margin: 0 0 18px; }
+  .back-link {
+    display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); text-decoration: none;
+    font-size: 13px; margin-bottom: 20px;
+  }
+  .back-link:hover { color: var(--ink); }
+  .back-link .ic { width: 15px; height: 15px; }
+  @media (max-width: 640px) {
+    .settings-layout { flex-direction: column; gap: 20px; }
+    .settings-nav { width: 100%; flex-direction: row; overflow-x: auto; position: static; }
+  }
+
   /* chat modal */
   #chat-btn {
     display: inline-flex; align-items: center; justify-content: center;
@@ -289,6 +315,7 @@
     <symbol id="i-x" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></symbol>
     <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/></symbol>
     <symbol id="i-send" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
+    <symbol id="i-arrow-left" viewBox="0 0 24 24"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></symbol>
   </svg>
 
   <div class="wrap" id="auth-screen" hidden style="max-width: 360px; padding-top: 96px;">
@@ -335,9 +362,9 @@
         <button id="chat-btn" type="button" title="Ask the coach">
           <svg class="ic"><use href="#i-chat"/></svg>
         </button>
-        <button id="settings-btn" type="button" title="Settings">
+        <a id="settings-btn" href="/settings" title="Settings">
           <svg class="ic"><use href="#i-settings"/></svg>
-        </button>
+        </a>
         <button id="run-btn" type="button">
           <svg class="ic"><use href="#i-refresh"/></svg>
           <span id="run-btn-label">Run now</span>
@@ -345,85 +372,6 @@
         <button id="logout-btn" class="btn" type="button" title="Log out" style="font-size: 12px; padding: 6px 12px;">Log out</button>
       </div>
     </header>
-
-    <div class="modal-overlay" id="settings-modal" hidden>
-      <div class="modal">
-        <div class="modal-head">
-          <h2>Settings</h2>
-          <button class="modal-close" id="settings-close" type="button">
-            <svg class="ic"><use href="#i-x"/></svg>
-          </button>
-        </div>
-
-        <div class="field-row">
-          <label for="set-provider">AI provider</label>
-          <select id="set-provider"></select>
-        </div>
-        <div class="field-row">
-          <label for="set-language">Advice language</label>
-          <input id="set-language" type="text" placeholder="English">
-        </div>
-        <div class="field-row">
-          <label for="set-watch">Watch device name (InfluxDB Device tag)</label>
-          <input id="set-watch" type="text" placeholder="fenix 8 - 47mm, AMOLED">
-        </div>
-        <div class="field-row">
-          <label for="set-tz">Timezone</label>
-          <input id="set-tz" type="text" placeholder="Europe/Amsterdam">
-        </div>
-        <div class="field-row">
-          <label for="set-webhook">Discord webhook URL</label>
-          <input id="set-webhook" type="text" placeholder="https://discord.com/api/webhooks/...">
-        </div>
-
-        <div class="field-row">
-          <label>Login status</label>
-          <div class="auth-box" id="auth-box">Loading…</div>
-        </div>
-
-        <div class="field-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px;">
-          <label>Garmin connection</label>
-          <div id="garmin-body">Loading…</div>
-        </div>
-
-        <div class="field-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px;">
-          <label>Change password</label>
-          <input id="pw-current" type="password" placeholder="Current password" style="margin-top: 8px;" autocomplete="current-password">
-          <input id="pw-new" type="password" placeholder="New password (min 8 characters)" style="margin-top: 8px;" autocomplete="new-password">
-          <div class="settings-msg" id="pw-msg"></div>
-          <button class="btn" id="pw-change-btn" type="button" style="margin-top: 8px;">Change password</button>
-        </div>
-
-        <div class="field-row" id="admin-link-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px;" hidden>
-          <label>Admin</label>
-          <button class="btn" id="open-admin-btn" type="button">Manage users</button>
-        </div>
-
-        <div class="settings-msg" id="settings-msg"></div>
-
-        <div class="modal-actions">
-          <button class="btn" id="settings-cancel" type="button">Cancel</button>
-          <button class="btn btn-primary" id="settings-save" type="button">Save</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="modal-overlay" id="admin-modal" hidden>
-      <div class="modal">
-        <div class="modal-head">
-          <h2>Manage users</h2>
-          <button class="modal-close" id="admin-close" type="button">
-            <svg class="ic"><use href="#i-x"/></svg>
-          </button>
-        </div>
-        <div id="admin-users-body">Loading…</div>
-        <div class="field-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px;">
-          <label>Invite a new user</label>
-          <button class="btn btn-primary" id="admin-invite-btn" type="button">Generate invite link</button>
-          <div id="admin-invite-result" style="margin-top: 8px;"></div>
-        </div>
-      </div>
-    </div>
 
     <div class="modal-overlay" id="chat-modal" hidden>
       <div class="modal modal-chat">
@@ -489,6 +437,88 @@
     <div class="card">
       <h2>Advice history</h2>
       <div id="history-body"></div>
+    </div>
+  </div>
+
+  <div class="wrap" id="settings-screen" hidden>
+    <a class="back-link" href="/">
+      <svg class="ic"><use href="#i-arrow-left"/></svg> Back to dashboard
+    </a>
+    <div class="settings-layout">
+      <nav class="settings-nav">
+        <button class="settings-nav-btn active" data-pane="pane-general" type="button">
+          <svg class="ic"><use href="#i-settings"/></svg> General
+        </button>
+        <button class="settings-nav-btn" data-pane="pane-garmin" type="button">
+          <svg class="ic"><use href="#i-run"/></svg> Garmin
+        </button>
+        <button class="settings-nav-btn" data-pane="pane-account" type="button">
+          <svg class="ic"><use href="#i-heart"/></svg> Account
+        </button>
+        <button class="settings-nav-btn" id="admin-nav-btn" data-pane="pane-admin" type="button" hidden>
+          <svg class="ic"><use href="#i-alert"/></svg> Admin
+        </button>
+      </nav>
+
+      <div class="settings-content">
+        <div class="settings-pane active" id="pane-general">
+          <h2>General</h2>
+          <div class="field-row">
+            <label for="set-provider">AI provider</label>
+            <select id="set-provider"></select>
+          </div>
+          <div class="field-row">
+            <label for="set-language">Advice language</label>
+            <input id="set-language" type="text" placeholder="English">
+          </div>
+          <div class="field-row">
+            <label for="set-watch">Watch device name (InfluxDB Device tag)</label>
+            <input id="set-watch" type="text" placeholder="fenix 8 - 47mm, AMOLED">
+          </div>
+          <div class="field-row">
+            <label for="set-tz">Timezone</label>
+            <input id="set-tz" type="text" placeholder="Europe/Amsterdam">
+          </div>
+          <div class="field-row">
+            <label for="set-webhook">Discord webhook URL</label>
+            <input id="set-webhook" type="text" placeholder="https://discord.com/api/webhooks/...">
+          </div>
+          <div class="field-row">
+            <label>AI login status</label>
+            <div class="auth-box" id="auth-box">Loading…</div>
+          </div>
+          <div class="settings-msg" id="settings-msg"></div>
+          <div class="modal-actions" style="justify-content: flex-start;">
+            <button class="btn btn-primary" id="settings-save" type="button">Save</button>
+          </div>
+        </div>
+
+        <div class="settings-pane" id="pane-garmin">
+          <h2>Garmin connection</h2>
+          <div id="garmin-body">Loading…</div>
+        </div>
+
+        <div class="settings-pane" id="pane-account">
+          <h2>Account</h2>
+          <div class="field-row">
+            <label>Change password</label>
+            <input id="pw-current" type="password" placeholder="Current password" style="margin-top: 8px;" autocomplete="current-password">
+            <input id="pw-new" type="password" placeholder="New password (min 8 characters)" style="margin-top: 8px;" autocomplete="new-password">
+            <div class="settings-msg" id="pw-msg"></div>
+            <button class="btn" id="pw-change-btn" type="button" style="margin-top: 8px;">Change password</button>
+          </div>
+        </div>
+
+        <div class="settings-pane" id="pane-admin">
+          <h2>Manage users</h2>
+          <div id="admin-users-body">Loading…</div>
+          <div class="field-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 16px;">
+            <label>Invite a new user</label>
+            <button class="btn btn-primary" id="admin-invite-btn" type="button">Generate invite link</button>
+            <div id="admin-invite-result" style="margin-top: 8px;"></div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1071,26 +1101,17 @@ runBtn.addEventListener("click", async () => {
 // reflect that instead of showing an idle "Run now" button.
 pollRunStatus();
 
-// ---------- settings modal ----------
-const modal = $("#settings-modal");
-const settingsBtn = $("#settings-btn");
+// ---------- settings page ----------
+const settingsScreen = $("#settings-screen");
 const settingsMsg = $("#settings-msg");
 const authBox = $("#auth-box");
 const providerSelect = $("#set-provider");
 let loadedSettings = null;
 
-function closeModal() {
-  modal.hidden = true;
-  settingsMsg.textContent = "";
-  settingsMsg.className = "settings-msg";
-  loginFlowInProgress = false;
-  clearTimeout(backfillPollTimer);
-}
-
 // Set while the login-URL/code-paste screen is showing, inside startLoginFlow()
-// below — openSettingsModal() checks this before calling refreshAuthBox() so
-// reopening/re-rendering the settings modal mid-login doesn't wipe out the
-// pasted-code screen and force starting the login over again.
+// below — loadSettingsPage() checks this before calling refreshAuthBox() so
+// re-rendering mid-login doesn't wipe out the pasted-code screen and force
+// starting the login over again.
 let loginFlowInProgress = false;
 
 // Renders one row per known provider (not just the active one) so the user can
@@ -1225,8 +1246,7 @@ async function startLoginFlow(providerName, wrap) {
   wrap.append(submitBtn);
 }
 
-async function openSettingsModal() {
-  modal.hidden = false;
+async function loadSettingsPage() {
   settingsMsg.textContent = "";
   let s;
   try {
@@ -1251,13 +1271,19 @@ async function openSettingsModal() {
   $("#set-webhook").value = s.discord_webhook_url || "";
   if (!loginFlowInProgress) refreshAuthBox();
   if (!garminFlowInProgress) refreshGarminBody();
-  $("#admin-link-row").hidden = !isAdmin;
+  $("#admin-nav-btn").hidden = !isAdmin;
 }
 
-settingsBtn.addEventListener("click", openSettingsModal);
-$("#settings-close").addEventListener("click", closeModal);
-$("#settings-cancel").addEventListener("click", closeModal);
-modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+// ---------- settings page: tab navigation ----------
+for (const btn of document.querySelectorAll(".settings-nav-btn")) {
+  btn.addEventListener("click", () => {
+    for (const b of document.querySelectorAll(".settings-nav-btn")) b.classList.remove("active");
+    for (const p of document.querySelectorAll(".settings-pane")) p.classList.remove("active");
+    btn.classList.add("active");
+    $("#" + btn.dataset.pane).classList.add("active");
+    if (btn.dataset.pane === "pane-admin") refreshAdminUsers();
+  });
+}
 
 $("#settings-save").addEventListener("click", async () => {
   const saveBtn = $("#settings-save");
@@ -1286,14 +1312,7 @@ $("#settings-save").addEventListener("click", async () => {
       settingsMsg.textContent = providerChanged ? "Saved — provider switched." : "Saved.";
       settingsMsg.className = "settings-msg ok";
       loadedSettings = data.settings;
-      if (providerChanged) {
-        // Provider switch needs a moment to show the new login status before
-        // closing, rather than closing immediately and hiding that info.
-        await refreshAuthBox();
-        setTimeout(closeModal, 1200);
-      } else {
-        setTimeout(closeModal, 500);
-      }
+      if (providerChanged) refreshAuthBox();
     }
   } catch (e) {
     settingsMsg.textContent = "Could not save settings.";
@@ -1656,13 +1675,13 @@ async function pollBackfillStatus() {
   }
   if (status.running) {
     backfillPollTimer = setTimeout(pollBackfillStatus, 3000);
-    if (!modal.hidden) renderBackfillProgress(status.progress || {});
+    if (!settingsScreen.hidden) renderBackfillProgress(status.progress || {});
     return;
   }
   garminFlowInProgress = false;
   if (status.error) {
     garminBody.append(el("div", null, "Import stopped: " + status.error));
-  } else if (!modal.hidden) {
+  } else if (!settingsScreen.hidden) {
     refreshGarminBody();
   }
 }
@@ -1713,14 +1732,7 @@ $("#pw-change-btn").addEventListener("click", async () => {
 });
 
 // ---------- admin: manage users ----------
-const adminModal = $("#admin-modal");
 const adminUsersBody = $("#admin-users-body");
-
-async function openAdminModal() {
-  adminModal.hidden = false;
-  $("#admin-invite-result").textContent = "";
-  await refreshAdminUsers();
-}
 
 async function refreshAdminUsers() {
   adminUsersBody.textContent = "Loading…";
@@ -1748,9 +1760,6 @@ async function refreshAdminUsers() {
   if (!(data.users || []).length) adminUsersBody.textContent = "No users found.";
 }
 
-$("#open-admin-btn").addEventListener("click", openAdminModal);
-$("#admin-close").addEventListener("click", () => { adminModal.hidden = true; });
-adminModal.addEventListener("click", (e) => { if (e.target === adminModal) adminModal.hidden = true; });
 
 $("#admin-invite-btn").addEventListener("click", async () => {
   const btn = $("#admin-invite-btn");
@@ -1787,15 +1796,23 @@ async function boot() {
   const inviteToken = inviteTokenFromPath();
   if (who.logged_in && !inviteToken) {
     authScreen.hidden = true;
-    mainWrap.hidden = false;
     isAdmin = !!who.is_admin;
     $("#whoami").textContent = who.username + (who.is_admin ? " (admin)" : "");
-    load();
-    setInterval(load, 5 * 60 * 1000);
+    if (window.location.pathname === "/settings") {
+      mainWrap.hidden = true;
+      settingsScreen.hidden = false;
+      loadSettingsPage();
+    } else {
+      settingsScreen.hidden = true;
+      mainWrap.hidden = false;
+      load();
+      setInterval(load, 5 * 60 * 1000);
+    }
     return;
   }
   authScreen.hidden = false;
   mainWrap.hidden = true;
+  settingsScreen.hidden = true;
   if (inviteToken) {
     loginCard.hidden = true;
     registerCard.hidden = false;

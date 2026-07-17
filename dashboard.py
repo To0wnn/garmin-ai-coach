@@ -265,13 +265,13 @@ class Handler(BaseHTTPRequestHandler):
         # from the exact-match _PUBLIC_GET_PATHS set.
         is_public = self.path in _PUBLIC_GET_PATHS or self.path.startswith("/register/")
         if not is_public and self._current_user() is None and self.path not in ("/api/whoami",):
-            if self.path == "/":
+            if self.path == "/" or self.path == "/settings":
                 self._serve_html()  # dashboard.html itself renders a login form client-side
                 return
             self._send_json({"error": "not logged in"}, status=401)
             return
 
-        if self.path == "/" or self.path == "/login" or self.path.startswith("/register/"):
+        if self.path == "/" or self.path == "/login" or self.path == "/settings" or self.path.startswith("/register/"):
             self._serve_html()
         elif self.path == "/api/whoami":
             user = self._current_user()
