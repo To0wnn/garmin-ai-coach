@@ -14,6 +14,8 @@ history, own dashboard account. An admin invites new users with one-time
 links; a user without their own Claude/Antigravity subscription can borrow
 another user's already-logged-in AI session via a share code.
 
+![Dashboard screenshot](docs/dashboard-preview.png)
+
 ## Requirements
 
 - A Garmin Connect account
