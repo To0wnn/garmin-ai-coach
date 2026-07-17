@@ -51,6 +51,27 @@ def _send_literal_and_enter(text: str):
     _tmux("send-keys", "-t", SESSION, "Enter")
 
 
+PROMPT_FILE = "/app/output/prompt.md"
+
+
+def _send_via_file_and_enter(text: str):
+    """Writes the prompt to a file and sends only a short, single-line instruction
+    referencing it, instead of pasting the full prompt into the pane. Confirmed
+    necessary for Antigravity CLI: its TUI treats Enter as "new line" rather than
+    "submit" once the paste buffer becomes multi-line (which the daily prompt,
+    25k+ chars, always is) — a bug in Antigravity/Gemini CLI's own paste handling
+    (see google-gemini/gemini-cli issues #15849, #13118; earendil-works/pi#2376),
+    not something load-buffer/paste-buffer's length limit can fix, since the paste
+    itself succeeds — the CLI just never treats the follow-up Enter as a submit.
+    Applied to both providers (not just Antigravity) for one consistent, simpler,
+    more robust mechanism rather than a provider-specific special case — Claude
+    Code doesn't hit this bug, but sending less raw text through the pane is
+    strictly more robust there too as prompts keep growing."""
+    with open(PROMPT_FILE, "w") as f:
+        f.write(text)
+    _send_literal_and_enter(f"Read the file {PROMPT_FILE} and follow the instructions in it.")
+
+
 def _clear_session():
     """Clears the conversation so the next cron run starts with a clean
     slate — prevents unbounded context buildup in this long-lived session.
@@ -86,14 +107,20 @@ def _wait_for_stable_file(output_file: str, max_wait_seconds: int):
     raise TimeoutError(f"No (stable) answer file within {max_wait_seconds}s: {output_file}")
 
 
+def _remove_prompt_file():
+    if os.path.exists(PROMPT_FILE):
+        os.remove(PROMPT_FILE)
+
+
 def ask_and_wait_for_file(prompt: str, output_file: str):
     """One-shot: sends prompt, waits for the answer file, then /clear's the
     session so the NEXT call starts with a clean slate. Used by coach.py's
     daily/weekly advice generation, where each run is independent."""
     if os.path.exists(output_file):
         os.remove(output_file)
-    _send_literal_and_enter(prompt)
+    _send_via_file_and_enter(prompt)
     _wait_for_stable_file(output_file, MAX_WAIT_SECONDS)
+    _remove_prompt_file()
     _clear_session()
 
 
@@ -104,8 +131,9 @@ def ask_and_wait_for_file_no_clear(prompt: str, output_file: str, max_wait_secon
     when a conversation starts (see chat_ask.start_chat)."""
     if os.path.exists(output_file):
         os.remove(output_file)
-    _send_literal_and_enter(prompt)
+    _send_via_file_and_enter(prompt)
     _wait_for_stable_file(output_file, max_wait_seconds)
+    _remove_prompt_file()
 
 
 if __name__ == "__main__":

@@ -42,13 +42,17 @@ CREATE TABLE IF NOT EXISTS sleep (
     raw_json TEXT
 );
 
+-- Column names follow get_hrv_data()'s real hrvSummary.baseline shape (verified
+-- against a live response): balancedLow/balancedUpper is the BALANCED band Garmin
+-- itself uses for the "BALANCED" status; lowUpper is a separate, lower cutoff.
 CREATE TABLE IF NOT EXISTS hrv (
     date TEXT PRIMARY KEY,
     last_night_avg INTEGER,
     weekly_avg INTEGER,
     status TEXT,
-    baseline_low INTEGER,
-    baseline_upper INTEGER,
+    baseline_low_upper INTEGER,
+    baseline_balanced_low INTEGER,
+    baseline_balanced_upper INTEGER,
     synced_at TEXT,
     raw_json TEXT
 );
@@ -134,17 +138,15 @@ CREATE TABLE IF NOT EXISTS activities (
 CREATE INDEX IF NOT EXISTS idx_activities_date ON activities(date);
 CREATE INDEX IF NOT EXISTS idx_activities_type_date ON activities(type, date);
 
--- ActivityLap's own coarse "sport" vocabulary ("cycling"/"running"/"generic") is
--- NOT the same as activities.type's fine-grained activityType values — kept as a
--- genuinely separate column, per the gotcha already documented in coach.py's old
--- _cycling_power_zones().
+-- get_activity_splits()'s lapDTOs carry no per-lap sport/type field (verified
+-- against a real response) — sport is looked up via activity_id -> activities.type
+-- when needed (e.g. filtering for cycling laps), not duplicated onto every lap row.
 CREATE TABLE IF NOT EXISTS activity_laps (
     activity_id INTEGER NOT NULL,
     lap_idx INTEGER NOT NULL,
     duration_s INTEGER,
     avg_power REAL,
     avg_hr INTEGER,
-    sport TEXT,
     PRIMARY KEY (activity_id, lap_idx)
 );
 
