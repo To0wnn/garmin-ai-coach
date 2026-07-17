@@ -154,10 +154,11 @@ def is_logged_in(provider_name: str) -> bool:
     return False
 
 
-def logout(provider_name: str):
-    """Removes the cached credential and restarts the session so the next
-    start_session() call shows the login screen again — used when the user
-    wants to switch Google/Claude accounts rather than just switching provider."""
+def logout(provider_name: str, active_provider: str):
+    """Removes the cached credential for provider_name. Only restarts the tmux
+    session if provider_name IS the one currently running in it (active_provider)
+    — logging out of a provider that ISN'T the live session would otherwise switch
+    the live session over to it as an unwanted side effect of start_session()."""
     if provider_name == "claude":
         claude_json = os.path.expanduser("~/.claude.json")
         if os.path.exists(claude_json):
@@ -172,7 +173,8 @@ def logout(provider_name: str):
         token_file = os.path.join(os.path.expanduser(get_provider(provider_name)["auth_dir"]), "antigravity-oauth-token")
         if os.path.exists(token_file):
             os.remove(token_file)
-    start_session(provider_name)
+    if provider_name == active_provider:
+        start_session(provider_name)
 
 
 if __name__ == "__main__":

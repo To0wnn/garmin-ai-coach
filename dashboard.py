@@ -113,10 +113,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(s)
         elif self.path == "/api/auth-status":
             current = settings_module.read_settings()["provider"]
+            # is_logged_in() checks each provider's own credential file directly
+            # (~/.claude.json's oauthAccount, ~/.gemini/antigravity-cli's token file)
+            # rather than the live tmux session — so it's safe to check every known
+            # provider here, not just the currently active one. Lets the settings UI
+            # show login status for both without the user having to switch the
+            # active provider first just to see whether the other one is logged in.
             self._send_json({
                 "provider": current,
                 "logged_in": session_manager.is_logged_in(current),
                 "session_alive": session_manager.is_session_alive(),
+                "all": {name: session_manager.is_logged_in(name) for name in PROVIDERS},
             })
         else:
             self.send_error(404)
@@ -188,8 +195,30 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"saved": True, "settings": updated, "session": session_result})
 
     def _handle_login_start(self):
-        provider = settings_module.read_settings()["provider"]
-        result = session_manager.start_login(provider)
+        body = self._read_json_body()
+        active_provider = settings_module.read_settings()["provider"]
+        target_provider = body.get("provider") or active_provider
+
+        # Logging in to a provider that ISN'T the live tmux session requires
+        # switching to it first — start_login() only works against the currently
+        # running CLI's pane. Switching is the same guarded operation as a
+        # settings-page provider change, so it needs the same _run_lock/_chat_lock
+        # protection (see _handle_settings_update) before touching the session.
+        if target_provider != active_provider:
+            if _run_lock.locked() or _run_state["running"]:
+                self._send_json({"url": None, "reason": "a run is in progress, try again shortly"}, status=409)
+                return
+            if not _chat_lock.acquire(blocking=False):
+                self._send_json({"url": None, "reason": "a chat message is in flight, try again shortly"}, status=409)
+                return
+            try:
+                session_manager.start_session(target_provider)
+                settings_module.write_settings({"provider": target_provider})
+            finally:
+                _chat_lock.release()
+
+        result = session_manager.start_login(target_provider)
+        result["provider"] = target_provider
         self._send_json(result)
 
     def _handle_login_code(self):
@@ -204,24 +233,35 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"logged_in": session_manager.is_logged_in(provider)})
 
     def _handle_logout(self):
-        # logout() calls session_manager.start_session() (kill-session + new-session +
-        # up to READY_TIMEOUT_SECONDS of polling) same as a provider switch below — needs
-        # the same guards, otherwise a concurrent "Run now"/chat turn/Save-provider-switch
-        # can race it: two start_session() calls stepping on each other (one's kill-session
-        # landing mid-poll of the other's freshly started session) is what actually caused
-        # logout to need a second click/Save to "unstick" — not just slow timing.
-        if _run_lock.locked() or _run_state["running"]:
-            self._send_json({"logged_out": False, "reason": "a run is in progress, try again shortly"}, status=409)
-            return
-        if not _chat_lock.acquire(blocking=False):
-            self._send_json({"logged_out": False, "reason": "a chat message is in flight, try again shortly"}, status=409)
-            return
-        try:
-            provider = settings_module.read_settings()["provider"]
-            session_manager.logout(provider)
-        finally:
-            _chat_lock.release()
-        self._send_json({"logged_out": True})
+        body = self._read_json_body()
+        active_provider = settings_module.read_settings()["provider"]
+        # Which provider's credential to clear — defaults to the active one (the
+        # only option before both providers' login status was shown side by side).
+        # logout() itself only restarts the tmux session when target == active, so
+        # logging out of the OTHER provider is a cheap credential-file-only op.
+        target_provider = body.get("provider") or active_provider
+
+        # session_manager.start_session() (kill-session + new-session + up to
+        # READY_TIMEOUT_SECONDS of polling) only runs when target == active — only
+        # need the run/chat guards in that case, otherwise a concurrent "Run
+        # now"/chat turn/provider-switch can race it: two start_session() calls
+        # stepping on each other (one's kill-session landing mid-poll of the
+        # other's freshly started session) is what actually caused logout to need
+        # a second click/Save to "unstick" before this guard existed.
+        if target_provider == active_provider:
+            if _run_lock.locked() or _run_state["running"]:
+                self._send_json({"logged_out": False, "reason": "a run is in progress, try again shortly"}, status=409)
+                return
+            if not _chat_lock.acquire(blocking=False):
+                self._send_json({"logged_out": False, "reason": "a chat message is in flight, try again shortly"}, status=409)
+                return
+            try:
+                session_manager.logout(target_provider, active_provider)
+            finally:
+                _chat_lock.release()
+        else:
+            session_manager.logout(target_provider, active_provider)
+        self._send_json({"logged_out": True, "provider": target_provider})
 
     def _handle_chat_start(self):
         if _run_lock.locked() or _run_state["running"]:

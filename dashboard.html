@@ -1021,6 +1021,9 @@ function closeModal() {
 // pasted-code screen and force starting the login over again.
 let loginFlowInProgress = false;
 
+// Renders one row per known provider (not just the active one) so the user can
+// see at a glance whether the OTHER provider is already logged in, instead of
+// having to switch to it first just to check.
 async function refreshAuthBox() {
   authBox.textContent = "Checking…";
   let status;
@@ -1031,67 +1034,83 @@ async function refreshAuthBox() {
     return;
   }
   authBox.innerHTML = "";
-  const row = el("div", "auth-status");
-  const dot = el("span", "auth-dot " + (status.logged_in ? "ok" : "no"));
-  row.append(dot, status.logged_in
-    ? `Logged in (${status.provider})`
-    : `Not logged in (${status.provider})`);
-  authBox.append(row);
-
-  if (!status.logged_in) {
-    const loginBtn = el("button", "btn", "Log in");
-    loginBtn.type = "button";
-    loginBtn.style.marginTop = "8px";
-    loginBtn.addEventListener("click", startLoginFlow);
-    authBox.append(loginBtn);
-  } else {
-    const logoutBtn = el("button", "btn", "Log out");
-    logoutBtn.type = "button";
-    logoutBtn.style.marginTop = "8px";
-    logoutBtn.addEventListener("click", async () => {
-      logoutBtn.disabled = true;
-      logoutBtn.textContent = "Logging out…";
-      try {
-        const res = await fetch("/api/logout", { method: "POST" });
-        const data = await res.json();
-        if (!res.ok) {
-          authBox.append(el("div", null, data.reason || "Could not log out."));
-          logoutBtn.disabled = false;
-          logoutBtn.textContent = "Log out";
-          return;
-        }
-      } catch (e) {
-        logoutBtn.disabled = false;
-        logoutBtn.textContent = "Log out";
-        return;
-      }
-      refreshAuthBox();
-    });
-    authBox.append(logoutBtn);
+  const labels = loadedSettings && loadedSettings.providers ? loadedSettings.providers : {};
+  for (const [name, loggedIn] of Object.entries(status.all || {})) {
+    authBox.append(renderProviderAuthRow(name, labels[name] || name, loggedIn, name === status.provider));
   }
 }
 
-async function startLoginFlow() {
-  authBox.innerHTML = "Starting login…";
+function renderProviderAuthRow(providerName, label, loggedIn, isActive) {
+  const wrap = el("div");
+  wrap.style.marginBottom = "10px";
+  wrap.style.paddingBottom = "10px";
+  wrap.style.borderBottom = "1px solid var(--border)";
+
+  const row = el("div", "auth-status");
+  const dot = el("span", "auth-dot " + (loggedIn ? "ok" : "no"));
+  row.append(dot, `${label}${isActive ? " (active)" : ""} — ${loggedIn ? "logged in" : "not logged in"}`);
+  wrap.append(row);
+
+  const btn = el("button", "btn", loggedIn ? "Log out" : (isActive ? "Log in" : "Switch & log in"));
+  btn.type = "button";
+  btn.style.marginTop = "8px";
+  btn.addEventListener("click", () => {
+    if (loggedIn) logoutProvider(providerName, btn, wrap);
+    else startLoginFlow(providerName, wrap);
+  });
+  wrap.append(btn);
+  return wrap;
+}
+
+async function logoutProvider(providerName, btn, wrap) {
+  btn.disabled = true;
+  btn.textContent = "Logging out…";
+  try {
+    const res = await fetch("/api/logout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: providerName }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      wrap.append(el("div", null, data.reason || "Could not log out."));
+      btn.disabled = false;
+      btn.textContent = "Log out";
+      return;
+    }
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Log out";
+    return;
+  }
+  refreshAuthBox();
+}
+
+async function startLoginFlow(providerName, wrap) {
+  wrap.innerHTML = "Starting login…";
   let result;
   try {
-    result = await (await fetch("/api/login/start", { method: "POST" })).json();
+    result = await (await fetch("/api/login/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: providerName }),
+    })).json();
   } catch (e) {
-    authBox.textContent = "Could not start login.";
+    wrap.textContent = "Could not start login.";
     return;
   }
   if (!result.url) {
-    authBox.textContent = "No login URL appeared — the session may already be logged in, or needs a manual check.";
+    wrap.textContent = result.reason || "No login URL appeared — the session may already be logged in, or needs a manual check.";
     return;
   }
   loginFlowInProgress = true;
-  authBox.innerHTML = "";
-  authBox.append(el("div", null, "Open this link, log in, then paste the code you get back:"));
+  wrap.innerHTML = "";
+  wrap.append(el("div", null, "Open this link, log in, then paste the code you get back:"));
   const link = el("a", "auth-link", result.url);
   link.href = result.url;
   link.target = "_blank";
   link.rel = "noopener";
-  authBox.append(link);
+  wrap.append(link);
 
   const codeInput = document.createElement("input");
   codeInput.type = "text";
@@ -1104,7 +1123,7 @@ async function startLoginFlow() {
   codeInput.style.borderRadius = "var(--radius-s)";
   codeInput.style.padding = "6px 8px";
   codeInput.style.fontSize = "12px";
-  authBox.append(codeInput);
+  wrap.append(codeInput);
 
   const submitBtn = el("button", "btn", "Submit code");
   submitBtn.type = "button";
@@ -1124,14 +1143,14 @@ async function startLoginFlow() {
       } else {
         submitBtn.disabled = false;
         submitBtn.textContent = "Submit code";
-        authBox.append(el("div", null, "Login not confirmed yet — check the code and try again."));
+        wrap.append(el("div", null, "Login not confirmed yet — check the code and try again."));
       }
     } catch (e) {
       submitBtn.disabled = false;
       submitBtn.textContent = "Submit code";
     }
   });
-  authBox.append(submitBtn);
+  wrap.append(submitBtn);
 }
 
 async function openSettingsModal() {
