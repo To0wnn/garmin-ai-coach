@@ -67,7 +67,12 @@ def owner_log_file(user_id: int) -> str:
 SPORT_TYPES = {
     "running": ["running"],
     "cycling": ["road_biking", "indoor_cycling", "mountain_biking", "gravel_cycling", "cycling"],
+    "walking": ["walking", "hiking"],
 }
+
+# sport key -> the short field prefix used throughout the AI JSON schema
+# (run_tip/bike_tip/walk_tip, run_target/bike_target/walk_target, etc.)
+SPORT_FIELD = {"running": "run", "cycling": "bike", "walking": "walk"}
 
 
 def owner_output_file(owner_id: int) -> str:
@@ -142,11 +147,18 @@ def _compute_sport_adherence(target: dict | None, actual_activities: list[dict],
 
 
 def _compute_adherence(target_entry: dict, actual_activities: list[dict]) -> dict:
+    """Scores every sport in SPORT_TYPES, not just enabled ones — a sport disabled
+    AFTER this day's advice was written should still show its historical adherence
+    correctly, and a disabled sport with no target simply scores gray (rest/no
+    target) same as it always has, so there's no need to filter by enabled_sports
+    here at all."""
     advice = target_entry.get("advice", {})
-    run = _compute_sport_adherence(advice.get("run_target"), actual_activities, "running")
-    bike = _compute_sport_adherence(advice.get("bike_target"), actual_activities, "cycling")
-    day_color = max((run["color"], bike["color"]), key=lambda c: _COLOR_RANK[c])
-    return {"run": run, "bike": bike, "day_color": day_color}
+    result = {}
+    for sport, field in SPORT_FIELD.items():
+        result[field] = _compute_sport_adherence(advice.get(f"{field}_target"), actual_activities, sport)
+    day_color = max((s["color"] for s in result.values()), key=lambda c: _COLOR_RANK[c])
+    result["day_color"] = day_color
+    return result
 
 
 def read_coach_log(user_id: int) -> list[dict]:
@@ -163,12 +175,12 @@ def read_coach_log(user_id: int) -> list[dict]:
     return [e for e in entries if e.get("date", "") >= cutoff]
 
 
-TIP_STRUCTURE = """TIP STRUCTURE — applies to run_tip, bike_tip, and to the weekly run_advice and bike_advice. Every one of these fields MUST follow this exact structure, in {LANGUAGE}:
+TIP_STRUCTURE = """TIP STRUCTURE — applies to run_tip, bike_tip, walk_tip, and to the weekly run_advice, bike_advice and walk_advice (only for sports listed in enabled_sports — see below). Every one of these fields MUST follow this exact structure, in {LANGUAGE}:
 
 Write exactly two blocks separated by a single line break ("\\n"). No headers, no bullets, no bold.
 
 BLOCK 1 — THE CALL. One short sentence (max ~15 words). State the decision first, before any reasoning. Two allowed forms, nothing else:
-- Session advised: name the session type, duration, and intensity target, matching the run_target/bike_target numbers exactly. Example shape: "Easy run today: 40 min at HR 130-148."
+- Session advised: name the session type, duration, and intensity target, matching the run_target/bike_target/walk_target numbers exactly. Example shape: "Easy run today: 40 min at HR 130-148."
 - No session advised: state that explicitly as a decision, optionally with the reason in three words. Example shape: "No second ride today — this morning covers it." Never skip Block 1 or replace it with reasoning when there is no session; "do nothing" is a call and must be stated as one.
 
 BLOCK 2 — THE WHY, then at most ONE watch-out. Two sentences maximum.
@@ -177,32 +189,37 @@ BLOCK 2 — THE WHY, then at most ONE watch-out. Two sentences maximum.
 
 HARD RULES:
 - The order is always: decision -> evidence -> caveat. Never open with a fact or reasoning ("You haven't run yet...", "Your ACWR is..."); open with what to do.
-- run_tip and bike_tip must be structurally parallel: same two-block shape, same sentence roles, so they read as one coach speaking.
+- run_tip, bike_tip and walk_tip must be structurally parallel: same two-block shape, same sentence roles, so they read as one coach speaking.
 - Do not repeat a number already used in Block 1 inside Block 2 unless it adds new meaning.
 - Keep each full tip under 500 characters. Plain declarative sentences, no wordplay or idioms — the text must translate cleanly into any language."""
 
 JSON_SCHEMA_DAILY = """{
   "status": "<1 sentence: sleep/resting HR/body battery/training readiness score>",
-  "run_tip": "<follows TIP STRUCTURE above>",
-  "bike_tip": "<follows TIP STRUCTURE above>",
+  "run_tip": "<follows TIP STRUCTURE above, only if \\"running\\" is in enabled_sports — otherwise omit/null>",
+  "bike_tip": "<follows TIP STRUCTURE above, only if \\"cycling\\" is in enabled_sports — otherwise omit/null>",
+  "walk_tip": "<follows TIP STRUCTURE above, only if \\"walking\\" is in enabled_sports — otherwise omit/null>",
   "run_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no run session advised today>",
   "bike_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no bike session advised today>",
+  "walk_target": "<{duration_min: int, hr_min: int, hr_max: int} or null if no walk session advised today>",
   "tomorrow_run": "<1 tentative one-liner: workout type + duration + HR range for tomorrow's run, e.g. 'Likely an easy run, ~35 min, HR 130-148' — or 'Likely a rest day' if no run is probable. Null if genuinely too uncertain to say anything.>",
   "tomorrow_bike": "<1 tentative one-liner: workout type + duration + power range (from cycling_power_zones if available, otherwise HR range) for tomorrow's ride, e.g. 'Likely a tempo ride, ~45 min, 175-210W' — or 'Likely a rest day' if no ride is probable. Null if genuinely too uncertain to say anything.>",
+  "tomorrow_walk": "<1 tentative one-liner: same shape as tomorrow_run but for tomorrow's walk, e.g. 'Likely an easy walk, ~30 min, HR 110-130' — or 'Likely a rest day' if no walk is probable. Null if genuinely too uncertain to say anything.>",
   "color": "green or yellow"
 }"""
 
 JSON_SCHEMA_WEEKLY = """{
   "performance": "<2-3 sentences overall weekly assessment, referencing the trend across recent_activities_14d, coach_log, vo2max, and intensity_distribution_7d/28d>",
   "recovery": "<2-3 sentences, explicitly mention the ACWR ratio and training_load_by_sport>",
-  "run_advice": "<follows TIP STRUCTURE above, applied to the coming week's plan instead of just today>",
-  "bike_advice": "<follows TIP STRUCTURE above, applied to the coming week's plan instead of just today>",
+  "run_advice": "<follows TIP STRUCTURE above, applied to the coming week's plan instead of just today, only if \\"running\\" is in enabled_sports — otherwise omit/null>",
+  "bike_advice": "<follows TIP STRUCTURE above, applied to the coming week's plan instead of just today, only if \\"cycling\\" is in enabled_sports — otherwise omit/null>",
+  "walk_advice": "<follows TIP STRUCTURE above, applied to the coming week's plan instead of just today, only if \\"walking\\" is in enabled_sports — otherwise omit/null>",
   "watch_point": "<1-2 sentences, or 'Nothing notable'>",
   "color": "green, orange or red"
 }"""
 
 
-def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict], owner_id: int) -> str:
+def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict], owner_id: int, enabled_sports: list[str]) -> str:
+    metrics = {**metrics, "enabled_sports": enabled_sports}
     m = json.dumps(metrics, indent=2, ensure_ascii=False)
     log = json.dumps(coach_log, indent=2, ensure_ascii=False) if coach_log else "[]"
     disclaimer = (
@@ -297,20 +314,29 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict], owner_id: i
     threshold HR), or there are already 2+ sessions of the same sport: advise against another
     session of that sport, give at most a short recovery tip, and explicitly mention what was
     already done (type/duration/distance).
-  For the sport not done at all today: give normal advice. If the list is empty: give a
-  suggestion for both sports.
-- run_target / bike_target: structured version of your run_tip/bike_tip advice, used to
-  later check whether the plan was actually followed. Set to null if you are not advising
-  a session for that sport today (e.g. rest day, or already covered under
+  For a sport not done at all today: give normal advice. If the list is empty: give a
+  suggestion for every enabled sport.
+- enabled_sports: the sports this user actually wants advice for — a plain list containing
+  any of "running", "cycling", "walking". Only write tip/target/tomorrow fields (run_*,
+  bike_*, walk_*) for sports present in this list; for any sport NOT in this list, omit that
+  sport's fields entirely (or set them null) and don't mention that sport anywhere in the
+  response — treat it as if it doesn't exist for this user, not as a rest day for that sport.
+- run_target / bike_target / walk_target: structured version of your run_tip/bike_tip/walk_tip
+  advice, used to later check whether the plan was actually followed. Set to null if you are
+  not advising a session for that sport today (e.g. rest day, or already covered under
   activities_already_done_today). Otherwise: {"duration_min": <int>, "hr_min": <int>,
   "hr_max": <int>} — duration_min is your intended session length in minutes, hr_min/hr_max
   is the target average-heart-rate RANGE for that session (not a hard ceiling — an average
   across the whole session), used for tracking adherence afterwards. Always fill this with a
   HR range even when bike_tip's headline intensity is given in watts (from
   cycling_power_zones) — convert/estimate the equivalent HR range for the target power zone so
-  adherence can still be tracked from recorded heart rate. These must be consistent with what
-  you just wrote in run_tip/bike_tip, not a separate or vaguer suggestion — e.g. if run_tip
-  says "40 minute easy run, HR 130-150", run_target must be
+  adherence can still be tracked from recorded heart rate. walk_target has no dedicated zone
+  data (no lactate-threshold or power estimate for walking) — base its HR range on a simple
+  easy-effort read (well below lactate_threshold_running.threshold_hr_running when available,
+  otherwise a conservative low-zone estimate from resting/max HR seen in the data), since
+  walking sessions are, by nature, easy-effort rather than a zone-targeted workout. These must
+  be consistent with what you just wrote in run_tip/bike_tip/walk_tip, not a separate or
+  vaguer suggestion — e.g. if run_tip says "40 minute easy run, HR 130-150", run_target must be
   {"duration_min": 40, "hr_min": 130, "hr_max": 150}.
 - recent_activities_14d: full activity history of the last 14 days (date, local_time, type,
   duration, avg HR), NOT necessarily one entry per day — there can be, and often are, rest days with no
@@ -322,19 +348,27 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict], owner_id: i
   state a count of consecutive days ("Nth day in a row") unless you have actually checked the
   `date` field of every entry and confirmed there is no gap — when in doubt, just describe the
   pattern qualitatively (e.g. "frequent cycling load this week") instead of inventing a number.
+- schedule.is_long_day: true if the user has designated today's weekday (schedule.day_of_week)
+  as a long-session day (user-configurable in settings, defaults to Saturday/Sunday). When true
+  AND readiness/ACWR/sleep don't argue against it, favor a longer endurance session (duration
+  meaningfully above your usual daily suggestion, e.g. 75+ min) over a shorter tempo/interval
+  session for that sport — this is the user's own weekly-structure preference, not just another
+  data signal, so don't override it with a short session unless recovery signals genuinely
+  call for an easy/rest day instead. When false, plan normally (no bias toward or against length).
 - coach_log: your own last 14 days of advice (JSON, oldest first). Use this to
   stay consistent (don't contradict yesterday's plan without reason) and to build an actual
   short-term plan across days (e.g. if you suggested an easy day yesterday, today can pick up
   intensity again, referencing that). If empty, this is one of the first runs — say so is not
   necessary, just give standalone advice.
-- tomorrow_run / tomorrow_bike (daily only): brief, tentative one-liners for tomorrow, one per
-  sport, reasoning forward from today's plan and recent load — e.g. if today is an easy/recovery
-  day for a sport, tomorrow likely has room for intensity in that sport; if today includes a
-  hard session, tomorrow is probably easier or a rest day for that sport. Each one-liner must
-  name a workout type (easy/tempo/interval/rest) AND include a concrete duration + intensity
-  range so the user can mentally prepare (e.g. "Likely an easy run, ~35 min, HR 130-148" or, for
-  cycling, prefer watts over HR when cycling_power_zones is available: "Likely a tempo ride,
-  ~45 min, 175-210W"). Keep the WORDING tentative ("likely", not a firm commitment) even though
+- tomorrow_run / tomorrow_bike / tomorrow_walk (daily only): brief, tentative one-liners for
+  tomorrow, one per enabled sport, reasoning forward from today's plan and recent load — e.g. if
+  today is an easy/recovery day for a sport, tomorrow likely has room for intensity in that
+  sport; if today includes a hard session, tomorrow is probably easier or a rest day for that
+  sport. Each one-liner must name a workout type (easy/tempo/interval/rest, or just "easy walk"
+  for walking) AND include a concrete duration + intensity range so the user can mentally
+  prepare (e.g. "Likely an easy run, ~35 min, HR 130-148" or, for cycling, prefer watts over HR
+  when cycling_power_zones is available: "Likely a tempo ride, ~45 min, 175-210W"). Keep the
+  WORDING tentative ("likely", not a firm commitment) even though
   the numbers are concrete — tomorrow's actual advice will be generated fresh with tomorrow's
   real data (sleep, HRV, whether today's plan was actually followed), so this is same-day
   mental preparation, not a promise to be held to. If a rest day is likely for a sport, say so
@@ -365,7 +399,9 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict], owner_id: i
         "on RECOVERY/OVERREACHING): give a short walking suggestion instead (e.g. 20-30 min easy "
         "walk) as an active-recovery alternative — that's not a contradiction of resting, active "
         "recovery promotes blood flow without adding load. State explicitly that it's a recovery "
-        "day, not a training day."
+        "day, not a training day. If \"walking\" is itself in enabled_sports, put this suggestion "
+        "in walk_tip/walk_target (that's what those fields are for) instead of folding it into "
+        "run_tip or bike_tip."
     )
 
     schema = JSON_SCHEMA_WEEKLY if weekly else JSON_SCHEMA_DAILY
@@ -386,10 +422,10 @@ def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict], owner_id: i
         else ""
     )
 
-    return f"""{role} Always give running and cycling advice in separate fields, never mixed
-into one. Be evidence-based: every recommendation must reference a specific number from the
-data below (e.g. "ACWR is 0.9" or "HRV is 1.3 SD below your baseline"), not vague statements
-like "your body seems tired".
+    return f"""{role} Always give advice for each enabled sport (see enabled_sports below) in its
+own separate field, never mixed into one. Be evidence-based: every recommendation must reference
+a specific number from the data below (e.g. "ACWR is 0.9" or "HRV is 1.3 SD below your
+baseline"), not vague statements like "your body seems tired".
 
 TRAINING PHILOSOPHY: the user's explicit goal is progressive improvement, not indefinite
 maintenance — default to the more ambitious, load-building option whenever the safety signals
@@ -463,29 +499,38 @@ def build_embed(advice: dict, weekly: bool) -> dict:
     today_str = NOW_LOCAL.strftime("%d-%m-%Y")
 
     if weekly:
+        fields = [
+            {"name": "📊 Performance", "value": _field(advice.get("performance")), "inline": False},
+            {"name": "😴 Recovery", "value": _field(advice.get("recovery")), "inline": False},
+        ]
+        if advice.get("run_advice"):
+            fields.append({"name": "🏃 Running", "value": _field(advice.get("run_advice")), "inline": False})
+        if advice.get("bike_advice"):
+            fields.append({"name": "🚴 Cycling", "value": _field(advice.get("bike_advice")), "inline": False})
+        if advice.get("walk_advice"):
+            fields.append({"name": "🚶 Walking", "value": _field(advice.get("walk_advice")), "inline": False})
+        fields.append({"name": "⚠️ Watch point", "value": _field(advice.get("watch_point")), "inline": False})
         return {
             "title": f"🏃🚴 Weekly overview — {today_str}",
             "color": color,
-            "fields": [
-                {"name": "📊 Performance", "value": _field(advice.get("performance")), "inline": False},
-                {"name": "😴 Recovery", "value": _field(advice.get("recovery")), "inline": False},
-                {"name": "🏃 Running", "value": _field(advice.get("run_advice")), "inline": False},
-                {"name": "🚴 Cycling", "value": _field(advice.get("bike_advice")), "inline": False},
-                {"name": "⚠️ Watch point", "value": _field(advice.get("watch_point")), "inline": False},
-            ],
+            "fields": fields,
             "footer": {"text": _footer_text()},
         }
-    fields = [
-        {"name": "Status", "value": _field(advice.get("status")), "inline": False},
-        {"name": "🏃 Running", "value": _field(advice.get("run_tip")), "inline": False},
-        {"name": "🚴 Cycling", "value": _field(advice.get("bike_tip")), "inline": False},
-    ]
-    if advice.get("tomorrow_run") or advice.get("tomorrow_bike"):
+    fields = [{"name": "Status", "value": _field(advice.get("status")), "inline": False}]
+    if advice.get("run_tip"):
+        fields.append({"name": "🏃 Running", "value": _field(advice.get("run_tip")), "inline": False})
+    if advice.get("bike_tip"):
+        fields.append({"name": "🚴 Cycling", "value": _field(advice.get("bike_tip")), "inline": False})
+    if advice.get("walk_tip"):
+        fields.append({"name": "🚶 Walking", "value": _field(advice.get("walk_tip")), "inline": False})
+    if advice.get("tomorrow_run") or advice.get("tomorrow_bike") or advice.get("tomorrow_walk"):
         preview_lines = []
         if advice.get("tomorrow_run"):
             preview_lines.append(f"🏃 {advice['tomorrow_run']}")
         if advice.get("tomorrow_bike"):
             preview_lines.append(f"🚴 {advice['tomorrow_bike']}")
+        if advice.get("tomorrow_walk"):
+            preview_lines.append(f"🚶 {advice['tomorrow_walk']}")
         fields.append({"name": "🔭 Tomorrow (preview)", "value": _field("\n".join(preview_lines)), "inline": False})
     return {
         "title": f"📅 Today — {today_str}",

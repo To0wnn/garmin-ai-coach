@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 
 import coach  # reuses NOW_LOCAL, LOCAL_TZ, SPORT_TYPES, _stddev, _format_pace — no duplication of pure logic
 import db
+import settings as _settings
 
 LOG_HISTORY_DAYS = coach.LOG_HISTORY_DAYS
 
@@ -384,7 +385,18 @@ def build_metrics(user_id: int) -> dict:
         "intensity_distribution_28d": _intensity_distribution(user_id, 28),
         "training_load_by_sport": _training_load_by_sport(user_id),
         "vo2max": _vo2max_trend(user_id),
+        "schedule": _schedule(user_id),
     }
+
+
+def _schedule(user_id: int) -> dict:
+    """Which weekday today is, and whether the user has designated it a
+    long-session day (settings-editable, defaults to Saturday/Sunday) — lets
+    the prompt favor a longer endurance session on those days instead of
+    only reasoning from readiness/ACWR day-to-day."""
+    long_days = _settings.read_settings(user_id)["long_days"]
+    today_name = coach.NOW_LOCAL.strftime("%A").lower()
+    return {"day_of_week": today_name, "is_long_day": today_name in long_days}
 
 
 def vo2max_series(user_id: int, days: int) -> dict:

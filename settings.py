@@ -12,10 +12,12 @@ import db
 DEFAULTS = {
     "provider": "claude",
     "language": "English",
-    "watch_device": "fenix 8 - 47mm, AMOLED",
+    "watch_device": "",
     "local_tz": "Europe/Amsterdam",
     "discord_webhook_url": "",
     "daily_time": "06:00",  # HH:MM local — when cron_dispatch.py fires this user's daily/weekly advice
+    "long_days": ["saturday", "sunday"],  # weekdays the AI should favor a longer session on
+    "enabled_sports": ["running", "cycling", "walking"],  # sports the AI gives advice/adherence for
 }
 
 

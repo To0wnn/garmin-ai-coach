@@ -84,11 +84,19 @@ def read_coach_log(user_id: int) -> list[dict]:
 def write_coach_log(user_id: int, advice: dict, weekly: bool):
     """Same as coach.py's write_coach_log(), but backfills adherence using
     the SQLite-sourced activity lookup instead of coach.py's InfluxDB one.
-    Writes to this user's own coach_log.json (coach.owner_log_file)."""
+    Writes to this user's own coach_log.json (coach.owner_log_file).
+
+    Drops any existing entry for today's date before appending the new one —
+    a same-day rerun (manual "Run now" after the dispatcher already fired,
+    or a dispatcher double-fire) must replace today's advice, not stack a
+    duplicate next to it (seen in production before cron_dispatch.py's
+    double-fire guard was fixed)."""
+    today = NOW_LOCAL.date().isoformat()
     entries = _backfill_adherence_sqlite(user_id, read_coach_log(user_id))
+    entries = [e for e in entries if e.get("date") != today]
     entries.append(
         {
-            "date": NOW_LOCAL.date().isoformat(),
+            "date": today,
             "weekly": weekly,
             "advice": advice,
         }
@@ -97,14 +105,14 @@ def write_coach_log(user_id: int, advice: dict, weekly: bool):
         json.dump(entries, f, ensure_ascii=False)
 
 
-def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict], owner_id: int) -> str:
+def build_prompt(metrics: dict, weekly: bool, coach_log: list[dict], owner_id: int, enabled_sports: list[str]) -> str:
     """Delegates to coach.py's build_prompt() unchanged — the prompt text
     itself (TIP_STRUCTURE, field explanations, training philosophy) has
     nothing to do with the data source and must not drift between the two
     implementations. owner_id is needed because the prompt itself instructs
     the AI to write its answer to that owner's output file (see coach.
     owner_output_file / the AI-session sharing model)."""
-    return coach.build_prompt(metrics, weekly, coach_log, owner_id)
+    return coach.build_prompt(metrics, weekly, coach_log, owner_id, enabled_sports)
 
 
 def build_chat_context(user_id: int) -> str:
@@ -184,12 +192,14 @@ def main(user_id: int = 1):
     # Stage 6/10, not here; Stage 3/4 only thread user_id/owner_id through the
     # layers underneath so they're ready for that dispatcher to call into.
     import auth
+    import settings as settings_module
 
     owner_id = auth.session_owner_id_of(auth.get_user_by_id(user_id))
     wait_for_fresh_sync(user_id)
     metrics = build_metrics(user_id)
     coach_log = read_coach_log(user_id)
-    prompt = build_prompt(metrics, IS_WEEKLY, coach_log, owner_id)
+    enabled_sports = settings_module.read_settings(user_id)["enabled_sports"]
+    prompt = build_prompt(metrics, IS_WEEKLY, coach_log, owner_id, enabled_sports)
     advice = call_claude(owner_id, prompt)
     embed = coach.build_embed(advice, IS_WEEKLY)
     coach.post_discord(embed)
