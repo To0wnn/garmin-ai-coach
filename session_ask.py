@@ -24,7 +24,7 @@ def session_name(owner_id: int) -> str:
 # a real run took over 80s of "thinking" alone plus tool calls before writing
 # the file. 180s cut it close; giving real headroom here.
 MAX_WAIT_SECONDS = 300
-POLL_INTERVAL = 2
+POLL_INTERVAL = 0.5
 FILE_STABLE_POLLS = 2  # number of identical file sizes in a row before assuming "done"
 
 
