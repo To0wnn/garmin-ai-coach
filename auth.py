@@ -12,6 +12,7 @@ entrypoint.sh (via list_distinct_session_owners(), below, for the boot-time
 per-owner tmux session loop)."""
 
 import hashlib
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -104,6 +105,81 @@ def list_users() -> list[dict]:
     (this is only reachable by an admin already, no need for a second
     field-filtered variant)."""
     return db.query("SELECT * FROM users ORDER BY created_at")
+
+
+def admin_set_password(user_id: int, new_password: str):
+    """Admin-initiated reset — unlike change_password(), doesn't require the
+    current password (an admin resetting a forgotten password can't know it)."""
+    new_hash, new_salt = hash_password(new_password)
+    db.execute("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?", (new_hash, new_salt, user_id))
+
+
+def set_admin(user_id: int, is_admin: bool):
+    db.execute("UPDATE users SET is_admin = ? WHERE id = ?", (int(is_admin), user_id))
+
+
+def rename_user(user_id: int, new_username: str) -> bool:
+    """Returns False if new_username is already taken (UNIQUE constraint) —
+    checked explicitly rather than letting sqlite3.IntegrityError bubble up,
+    since dashboard.py wants a clean {renamed: false, reason: ...} response
+    here rather than a 500."""
+    if get_user_by_username(new_username) is not None:
+        return False
+    db.execute("UPDATE users SET username = ? WHERE id = ?", (new_username, user_id))
+    return True
+
+
+# Every table keyed by user_id, for delete_user()'s cleanup below — kept as an
+# explicit list rather than introspecting db.py's schema at runtime, since a
+# wrong/missing entry here silently leaves orphaned rows instead of failing
+# loudly, and this project's schema doesn't change often enough to justify
+# the extra machinery of deriving it automatically.
+_USER_DATA_TABLES = [
+    "daily_summary", "sleep", "hrv", "training_readiness", "training_status",
+    "lactate_threshold", "max_metrics", "ftp", "activities", "activity_laps",
+    "bb_intraday", "hrv_intraday", "sync_state", "sync_log", "settings",
+]
+
+
+def delete_user(user_id: int):
+    """Removes a user and everything scoped to them: session/borrowed-session
+    plumbing, every per-user data table, and the filesystem state
+    (coach_log.json, AI-provider credentials under owners/<id>) that lives
+    outside the DB. Refuses to delete the last remaining admin, so the
+    dashboard can never lock every admin out of user management."""
+    user = get_user_by_id(user_id)
+    if user is None:
+        return
+    if user["is_admin"]:
+        other_admins = db.query("SELECT id FROM users WHERE is_admin = 1 AND id != ?", (user_id,))
+        if not other_admins:
+            raise ValueError("cannot delete the last remaining admin")
+
+    # Borrowers of this user's OWN share codes fall back to their own session
+    # rather than being left pointing at a now-deleted owner.
+    owned_codes = db.query("SELECT code FROM share_codes WHERE owner_user_id = ?", (user_id,))
+    for c in owned_codes:
+        borrowers = db.query("SELECT borrower_user_id FROM session_shares WHERE code = ?", (c["code"],))
+        for row in borrowers:
+            revert_to_own_session(row["borrower_user_id"])
+    # If THIS user was themself borrowing someone else's session, nothing to
+    # revert on the owner's side — deleting the row is enough.
+
+    db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    db.execute("DELETE FROM invites WHERE created_by_user_id = ? OR used_by_user_id = ?", (user_id, user_id))
+    db.execute("DELETE FROM share_codes WHERE owner_user_id = ?", (user_id,))
+    db.execute("DELETE FROM session_shares WHERE borrower_user_id = ?", (user_id,))
+    for table in _USER_DATA_TABLES:
+        db.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    import shutil
+
+    home = os.path.expanduser("~")
+    for rel in (f"users/{user_id}", f"owners/{user_id}"):
+        path = os.path.join(home, rel)
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def create_session(user_id: int) -> str:

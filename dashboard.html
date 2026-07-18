@@ -21,6 +21,7 @@
     --crit:      #e5484d;
     --run:       #3987e5;
     --bike:      #199e70;
+    --walk:      #c98a2b;
     --sp: 8px;
     --radius: 12px;
     --radius-s: 8px;
@@ -36,7 +37,14 @@
   .wrap { max-width: 1080px; margin-inline: auto; padding: 32px 24px 48px; }
 
   /* app shell: fixed sidebar + scrollable content */
+  /* [hidden] must win over the flex display below — the HTML "hidden"
+     attribute alone doesn't hide an element that has an explicit "display"
+     rule, since that's a normal author-stylesheet rule and beats the
+     browser's UA default "[hidden] { display: none }". Without this,
+     #app-shell stayed laid out (and scrollable) underneath the login screen
+     after logout even though .hidden = true was set correctly in JS. */
   #app-shell { display: flex; min-height: 100vh; }
+  #app-shell[hidden] { display: none; }
   .sidebar {
     flex: none; width: 220px; background: var(--surface); border-right: 1px solid var(--border);
     display: flex; flex-direction: column; padding: 20px 14px; position: sticky; top: 0; height: 100vh;
@@ -52,6 +60,10 @@
     color: var(--ink-2); border-radius: var(--radius-s); padding: 9px 10px; font-size: 13px; font-weight: 600;
     cursor: pointer; font-family: inherit; text-align: left; width: 100%;
   }
+  /* Same [hidden]-vs-explicit-display issue as #app-shell above — the
+     admin-only "Users" link sets .hidden = true in JS for non-admins, but
+     that alone doesn't hide it here without this override. */
+  .sidebar-link[hidden] { display: none; }
   .sidebar-link:hover { background: var(--surface-2); color: var(--ink); }
   .sidebar-link.active { background: var(--surface-2); color: var(--ink); }
   .sidebar-link .ic { width: 16px; height: 16px; flex: none; }
@@ -129,6 +141,11 @@
   .field-row select, .field-row input {
     width: 100%; background: var(--surface-2); border: 1px solid var(--border); color: var(--ink);
     border-radius: var(--radius-s); padding: 8px 10px; font-size: 13px; font-family: inherit;
+  }
+  .long-days-picker { display: flex; gap: 10px; flex-wrap: wrap; }
+  .long-days-picker label {
+    display: flex; align-items: center; gap: 5px; font-size: 13px; color: var(--ink);
+    margin-bottom: 0; width: auto;
   }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
   .btn {
@@ -234,6 +251,7 @@
   .sport-row .label { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
   .sport-row .label .ic.run { color: var(--run); }
   .sport-row .label .ic.bike { color: var(--bike); }
+  .sport-row .label .ic.walk { color: var(--walk); }
   .sport-tip { font-size: 14px; color: var(--ink-2); line-height: 1.5; white-space: pre-line; }
   .sport-tip .call { color: var(--ink); font-weight: 600; display: block; margin-bottom: 3px; }
   .target-pill {
@@ -337,6 +355,7 @@
     <symbol id="i-activity" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
     <symbol id="i-bike" viewBox="0 0 24 24"><circle cx="5.5" cy="17.5" r="3.5"/><circle cx="18.5" cy="17.5" r="3.5"/><path d="M15 6a1 1 0 100-2 1 1 0 000 2zm-3 11.5V14l-3-3 4-3 2 3h2"/></symbol>
     <symbol id="i-run" viewBox="0 0 24 24"><path d="M13 4a1 1 0 100-2 1 1 0 000 2zm4 18l-2-8-4-3 1-6"/><path d="M7 12l2-5 5 1 3 3 3 1"/><path d="M7 22l3-5"/></symbol>
+    <symbol id="i-walk" viewBox="0 0 24 24"><path d="M13.5 4a1 1 0 100-2 1 1 0 000 2zm1 3l-3 2 1 5-3 8"/><path d="M11.5 9l3 2 3-1M9 22l3-6 3 2"/></symbol>
     <symbol id="i-heart" viewBox="0 0 24 24"><path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 00-7.8 7.8l1 1.1L12 21.2l7.8-7.7 1-1.1a5.5 5.5 0 000-7.8z"/></symbol>
     <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1111.2 3 7 7 0 0021 12.8z"/></symbol>
     <symbol id="i-zap" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
@@ -440,6 +459,17 @@
             <div id="hero-body" class="empty">Loading…</div>
           </div>
 
+          <div class="card chat-panel">
+            <h2>Ask the coach</h2>
+            <div id="chat-messages"><div class="chat-empty" id="chat-empty-hint">Ask a follow-up question about today's advice, your trends, or anything else.</div></div>
+            <div class="chat-input-row">
+              <input id="chat-input" type="text" placeholder="Ask a follow-up question…">
+              <button class="btn btn-primary" id="chat-send" type="button">
+                <svg class="ic"><use href="#i-send"/></svg>
+              </button>
+            </div>
+          </div>
+
           <div class="grid grid2">
             <div class="card">
               <h2>Intensity distribution <small>last 7 days</small></h2>
@@ -461,6 +491,7 @@
               <div class="tl-rows">
                 <svg class="ic"><use href="#i-run"/></svg>
                 <svg class="ic"><use href="#i-bike"/></svg>
+                <svg class="ic"><use href="#i-walk"/></svg>
               </div>
               <div class="timeline" id="adherence-timeline" style="flex:1"></div>
             </div>
@@ -469,17 +500,6 @@
               <span class="key"><span class="dot" style="background:var(--warn)"></span>deviated</span>
               <span class="key"><span class="dot" style="background:var(--crit)"></span>missed</span>
               <span class="key"><span class="dot" style="background:var(--surface-2);border:1px solid var(--border)"></span>rest day</span>
-            </div>
-          </div>
-
-          <div class="card chat-panel">
-            <h2>Ask the coach</h2>
-            <div id="chat-messages"><div class="chat-empty" id="chat-empty-hint">Ask a follow-up question about today's advice, your trends, or anything else.</div></div>
-            <div class="chat-input-row">
-              <input id="chat-input" type="text" placeholder="Ask a follow-up question…">
-              <button class="btn btn-primary" id="chat-send" type="button">
-                <svg class="ic"><use href="#i-send"/></svg>
-              </button>
             </div>
           </div>
 
@@ -532,6 +552,26 @@
                   <input id="set-webhook" type="text" placeholder="https://discord.com/api/webhooks/...">
                 </div>
                 <div class="field-row">
+                  <label>Long training days</label>
+                  <div class="long-days-picker" id="set-long-days">
+                    <label><input type="checkbox" value="monday"> Mon</label>
+                    <label><input type="checkbox" value="tuesday"> Tue</label>
+                    <label><input type="checkbox" value="wednesday"> Wed</label>
+                    <label><input type="checkbox" value="thursday"> Thu</label>
+                    <label><input type="checkbox" value="friday"> Fri</label>
+                    <label><input type="checkbox" value="saturday"> Sat</label>
+                    <label><input type="checkbox" value="sunday"> Sun</label>
+                  </div>
+                </div>
+                <div class="field-row">
+                  <label>Sports</label>
+                  <div class="long-days-picker" id="set-sports">
+                    <label><input type="checkbox" value="running"> Running</label>
+                    <label><input type="checkbox" value="cycling"> Cycling</label>
+                    <label><input type="checkbox" value="walking"> Walking</label>
+                  </div>
+                </div>
+                <div class="field-row">
                   <label>AI login status</label>
                   <div class="auth-box" id="auth-box">Loading…</div>
                 </div>
@@ -554,6 +594,27 @@
                   <input id="pw-new" type="password" placeholder="New password (min 8 characters)" style="margin-top: 8px;" autocomplete="new-password">
                   <div class="settings-msg" id="pw-msg"></div>
                   <button class="btn" id="pw-change-btn" type="button" style="margin-top: 8px;">Change password</button>
+                </div>
+
+                <div class="field-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 16px;">
+                  <label>AI session</label>
+                  <div id="session-owner-status" style="font-size: 13px; color: var(--ink-2); margin-bottom: 8px;">Loading…</div>
+                  <button class="btn" id="revert-session-btn" type="button" hidden>Stop borrowing — use my own session</button>
+                </div>
+
+                <div class="field-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 16px;">
+                  <label>Your share codes <span style="font-weight:400;color:var(--ink-2)">— let someone else run advice through your AI session</span></label>
+                  <div id="share-codes-body" style="margin-top: 8px;">Loading…</div>
+                  <input id="share-label" type="text" placeholder="Label (optional, e.g. a name)" style="margin-top: 8px;">
+                  <button class="btn" id="share-create-btn" type="button" style="margin-top: 8px;">Generate share code</button>
+                  <div class="settings-msg" id="share-msg"></div>
+                </div>
+
+                <div class="field-row" style="border-top: 1px solid var(--border); padding-top: 14px; margin-top: 16px;">
+                  <label>Redeem someone else's share code</label>
+                  <input id="share-redeem-input" type="text" placeholder="Paste a share code" style="margin-top: 8px;">
+                  <div class="settings-msg" id="share-redeem-msg"></div>
+                  <button class="btn" id="share-redeem-btn" type="button" style="margin-top: 8px;">Redeem code</button>
                 </div>
               </div>
             </div>
@@ -705,6 +766,7 @@ function renderHero(entry) {
     if (a.recovery) grid.append(sportBlock(null, "Recovery", a.recovery, null));
     if (a.run_advice) grid.append(sportBlock("run", "Running", a.run_advice, null));
     if (a.bike_advice) grid.append(sportBlock("bike", "Cycling", a.bike_advice, null));
+    if (a.walk_advice) grid.append(sportBlock("walk", "Walking", a.walk_advice, null));
     frag.append(grid);
     if (a.watch_point && a.watch_point.toLowerCase() !== "nothing notable") {
       const wp = el("div", "watch-point");
@@ -715,25 +777,21 @@ function renderHero(entry) {
   } else {
     if (a.status) frag.append(el("div", "hero-copy", a.status));
     const grid = el("div", "grid grid2");
-    grid.append(sportBlock("run", "Running", a.run_tip, a.run_target));
-    grid.append(sportBlock("bike", "Cycling", a.bike_tip, a.bike_target));
+    if (a.run_tip) grid.append(sportBlock("run", "Running", a.run_tip, a.run_target));
+    if (a.bike_tip) grid.append(sportBlock("bike", "Cycling", a.bike_tip, a.bike_target));
+    if (a.walk_tip) grid.append(sportBlock("walk", "Walking", a.walk_tip, a.walk_target));
     frag.append(grid);
-    if (a.tomorrow_run || a.tomorrow_bike) {
+    if (a.tomorrow_run || a.tomorrow_bike || a.tomorrow_walk) {
       const tp = el("div", "watch-point tomorrow-preview");
       const lines = el("div", null);
       lines.style.display = "flex";
       lines.style.flexDirection = "column";
       lines.style.gap = "4px";
-      if (a.tomorrow_run) {
+      for (const [sport, text] of [["run", a.tomorrow_run], ["bike", a.tomorrow_bike], ["walk", a.tomorrow_walk]]) {
+        if (!text) continue;
         const row = el("div", null);
-        row.innerHTML = `<svg class="ic run" style="color:var(--run)"><use href="#i-run"/></svg> `;
-        row.append(a.tomorrow_run);
-        lines.append(row);
-      }
-      if (a.tomorrow_bike) {
-        const row = el("div", null);
-        row.innerHTML = `<svg class="ic bike" style="color:var(--bike)"><use href="#i-bike"/></svg> `;
-        row.append(a.tomorrow_bike);
+        row.innerHTML = `<svg class="ic ${sport}" style="color:var(--${sport})"><use href="#i-${sport}"/></svg> `;
+        row.append(text);
         lines.append(row);
       }
       tp.innerHTML = `<svg class="ic"><use href="#i-trend"/></svg>`;
@@ -950,9 +1008,9 @@ function renderAdherence(history) {
     day.append(el("span", "dow", fmtDate(entry.date, { weekday: "narrow" })));
 
     const adh = entry.adherence;
-    for (const sport of ["run", "bike"]) {
+    for (const sport of ["run", "bike", "walk"]) {
       const seg = el("i", "seg");
-      if (!adh) {
+      if (!adh || !adh[sport]) {
         seg.classList.add("pending");
       } else {
         const s = adh[sport];
@@ -973,6 +1031,7 @@ function renderAdherence(history) {
       } else {
         node.append(sportTooltipRow("Run", adh.run));
         node.append(sportTooltipRow("Bike", adh.bike));
+        node.append(sportTooltipRow("Walk", adh.walk));
       }
       showTooltip(e.clientX ?? day.getBoundingClientRect().left, e.clientY ?? day.getBoundingClientRect().top, node);
     };
@@ -1008,8 +1067,9 @@ function renderActivities(activities) {
     const typeTd = el("td", "type-cell");
     const isRun = (a.type || "").includes("run");
     const isBike = /bik|cycl/.test(a.type || "");
+    const isWalk = /walk|hik/.test(a.type || "");
     const dot = el("span", "dot");
-    dot.style.background = isRun ? "var(--run)" : isBike ? "var(--bike)" : "var(--ink-3)";
+    dot.style.background = isRun ? "var(--run)" : isBike ? "var(--bike)" : isWalk ? "var(--walk)" : "var(--ink-3)";
     typeTd.append(dot, a.type || "–");
     tr.append(typeTd);
     tr.append(el("td", null, a.name || "–"));
@@ -1322,9 +1382,131 @@ async function loadSettingsPage() {
   $("#set-watch").value = s.watch_device || "";
   $("#set-tz").value = s.local_tz || "";
   $("#set-webhook").value = s.discord_webhook_url || "";
+  const longDays = s.long_days || [];
+  for (const cb of document.querySelectorAll("#set-long-days input")) {
+    cb.checked = longDays.includes(cb.value);
+  }
+  const enabledSports = s.enabled_sports || [];
+  for (const cb of document.querySelectorAll("#set-sports input")) {
+    cb.checked = enabledSports.includes(cb.value);
+  }
+  renderSessionOwnerStatus(s.session_owner);
   if (!loginFlowInProgress) refreshAuthBox();
   if (!garminFlowInProgress) refreshGarminBody();
+  loadShareCodes();
 }
+
+function renderSessionOwnerStatus(sessionOwner) {
+  const status = $("#session-owner-status");
+  const revertBtn = $("#revert-session-btn");
+  if (!sessionOwner || !sessionOwner.borrowed) {
+    status.textContent = "Using your own AI session.";
+    revertBtn.hidden = true;
+  } else {
+    status.textContent = `Borrowing ${sessionOwner.owner_username || "another user"}'s AI session.`;
+    revertBtn.hidden = false;
+  }
+}
+
+async function loadShareCodes() {
+  const body = $("#share-codes-body");
+  let data;
+  try {
+    data = await (await fetch("/api/share/list")).json();
+  } catch (e) {
+    body.textContent = "Could not load share codes.";
+    return;
+  }
+  const codes = data.codes || [];
+  body.innerHTML = "";
+  if (!codes.length) {
+    body.append(el("div", "empty", "No share codes yet."));
+    return;
+  }
+  for (const c of codes) {
+    const row = el("div", "field-row");
+    row.style.marginBottom = "10px";
+    const codeLine = el("div");
+    codeLine.innerHTML = `<code>${c.code}</code>${c.label ? " — " + c.label : ""}`;
+    row.append(codeLine);
+    const who = c.borrowers && c.borrowers.length
+      ? "Used by: " + c.borrowers.map(b => b.username).join(", ")
+      : "Not redeemed by anyone yet.";
+    row.append(el("div", null, who));
+    const revokeBtn = el("button", "btn", "Revoke");
+    revokeBtn.type = "button";
+    revokeBtn.style.marginTop = "6px";
+    revokeBtn.addEventListener("click", async () => {
+      revokeBtn.disabled = true;
+      await fetch("/api/share/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: c.code }),
+      });
+      loadShareCodes();
+    });
+    row.append(revokeBtn);
+    body.append(row);
+  }
+}
+
+$("#share-create-btn").addEventListener("click", async () => {
+  const btn = $("#share-create-btn");
+  const msg = $("#share-msg");
+  btn.disabled = true;
+  msg.textContent = "";
+  try {
+    await fetch("/api/share/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: $("#share-label").value.trim() }),
+    });
+    $("#share-label").value = "";
+    loadShareCodes();
+  } catch (e) {
+    msg.textContent = "Could not create share code.";
+    msg.className = "settings-msg err";
+  }
+  btn.disabled = false;
+});
+
+$("#share-redeem-btn").addEventListener("click", async () => {
+  const btn = $("#share-redeem-btn");
+  const msg = $("#share-redeem-msg");
+  const code = $("#share-redeem-input").value.trim();
+  if (!code) return;
+  btn.disabled = true;
+  msg.textContent = "";
+  try {
+    const res = await fetch("/api/share/redeem", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.redeemed) {
+      msg.textContent = data.reason || "Could not redeem code.";
+      msg.className = "settings-msg err";
+    } else {
+      msg.textContent = `Now borrowing ${data.owner_username || "their"} session.`;
+      msg.className = "settings-msg ok";
+      $("#share-redeem-input").value = "";
+      loadSettingsPage();
+    }
+  } catch (e) {
+    msg.textContent = "Could not reach the server.";
+    msg.className = "settings-msg err";
+  }
+  btn.disabled = false;
+});
+
+$("#revert-session-btn").addEventListener("click", async () => {
+  const btn = $("#revert-session-btn");
+  btn.disabled = true;
+  await fetch("/api/share/revert", { method: "POST" });
+  loadSettingsPage();
+  btn.disabled = false;
+});
 
 // ---------- settings page: tab navigation ----------
 for (const btn of document.querySelectorAll(".settings-nav-btn")) {
@@ -1344,6 +1526,8 @@ $("#settings-save").addEventListener("click", async () => {
     watch_device: $("#set-watch").value.trim(),
     local_tz: $("#set-tz").value.trim() || "Europe/Amsterdam",
     discord_webhook_url: $("#set-webhook").value.trim(),
+    long_days: [...document.querySelectorAll("#set-long-days input:checked")].map((cb) => cb.value),
+    enabled_sports: [...document.querySelectorAll("#set-sports input:checked")].map((cb) => cb.value),
   };
   const providerChanged = loadedSettings && body.provider !== loadedSettings.provider;
   saveBtn.disabled = true;
@@ -1736,6 +1920,14 @@ const sidebar = $("#sidebar");
 const sidebarBackdrop = $("#sidebar-backdrop");
 
 function showPage(pageId, pushUrl) {
+  // Non-admins can still type /users directly (or hit Back into it) even
+  // though the sidebar link is hidden for them — /api/admin/users itself
+  // already 403s, but showing the empty/error page is confusing, so redirect
+  // to the dashboard instead of rendering an admin-only page for them.
+  if (pageId === "page-users" && !isAdmin) {
+    pageId = "page-dashboard";
+    pushUrl = "/";
+  }
   for (const btn of document.querySelectorAll(".sidebar-link[data-page]")) {
     btn.classList.toggle("active", btn.dataset.page === pageId);
   }
@@ -1833,12 +2025,102 @@ async function refreshAdminUsers() {
   }
   adminUsersBody.innerHTML = "";
   for (const u of data.users || []) {
+    const isSelf = u.id === (window.__whoamiId);
     const row = el("div");
-    row.style.marginBottom = "8px";
-    row.style.paddingBottom = "8px";
+    row.style.marginBottom = "10px";
+    row.style.paddingBottom = "10px";
     row.style.borderBottom = "1px solid var(--border)";
     const created = u.created_at ? new Date(u.created_at).toLocaleDateString() : "";
     row.append(el("div", null, `${u.username}${u.is_admin ? " (admin)" : ""} — joined ${created}`));
+
+    const actions = el("div");
+    actions.style.marginTop = "6px";
+    actions.style.display = "flex";
+    actions.style.gap = "6px";
+    actions.style.flexWrap = "wrap";
+
+    const renameBtn = el("button", "btn", "Rename");
+    renameBtn.type = "button";
+    renameBtn.addEventListener("click", async () => {
+      const name = window.prompt(`New username for ${u.username}:`, u.username);
+      if (!name || name.trim() === u.username) return;
+      renameBtn.disabled = true;
+      const res = await fetch("/api/admin/rename-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: u.id, new_username: name.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.renamed) {
+        alert(data.reason || "Could not rename user.");
+        renameBtn.disabled = false;
+        return;
+      }
+      refreshAdminUsers();
+    });
+    actions.append(renameBtn);
+
+    const resetBtn = el("button", "btn", "Reset password");
+    resetBtn.type = "button";
+    resetBtn.addEventListener("click", async () => {
+      const pw = window.prompt(`New password for ${u.username} (min 8 characters):`);
+      if (!pw) return;
+      resetBtn.disabled = true;
+      const res = await fetch("/api/admin/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: u.id, new_password: pw }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.reset) alert(data.reason || "Could not reset password.");
+      resetBtn.disabled = false;
+    });
+    actions.append(resetBtn);
+
+    const adminBtn = el("button", "btn", u.is_admin ? "Remove admin" : "Make admin");
+    adminBtn.type = "button";
+    if (isSelf && u.is_admin) adminBtn.disabled = true; // can't demote yourself — see _handle_admin_set_admin
+    adminBtn.addEventListener("click", async () => {
+      adminBtn.disabled = true;
+      const res = await fetch("/api/admin/set-admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: u.id, is_admin: !u.is_admin }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.changed) {
+        alert(data.reason || "Could not change admin status.");
+        adminBtn.disabled = false;
+        return;
+      }
+      refreshAdminUsers();
+    });
+    actions.append(adminBtn);
+
+    if (!isSelf) {
+      const deleteBtn = el("button", "btn", "Delete user");
+      deleteBtn.type = "button";
+      deleteBtn.style.color = "var(--crit)";
+      deleteBtn.addEventListener("click", async () => {
+        if (!window.confirm(`Delete ${u.username} and all their data? This cannot be undone.`)) return;
+        deleteBtn.disabled = true;
+        const res = await fetch("/api/admin/delete-user", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: u.id }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.deleted) {
+          alert(data.reason || "Could not delete user.");
+          deleteBtn.disabled = false;
+          return;
+        }
+        refreshAdminUsers();
+      });
+      actions.append(deleteBtn);
+    }
+
+    row.append(actions);
     adminUsersBody.append(row);
   }
   if (!(data.users || []).length) adminUsersBody.textContent = "No users found.";
@@ -1882,6 +2164,7 @@ async function boot() {
     authScreen.hidden = true;
     appShell.hidden = false;
     isAdmin = !!who.is_admin;
+    window.__whoamiId = who.id;
     $("#whoami").textContent = who.username + (who.is_admin ? " (admin)" : "");
     $("#sidebar-users-link").hidden = !isAdmin;
 
@@ -1919,7 +2202,11 @@ $("#login-btn").addEventListener("click", async () => {
       msg.className = "settings-msg err";
       return;
     }
-    window.location.href = "/";
+    // Login happens from "/" itself (the auth screen IS the "/" page while
+    // logged out) — a plain href="/" assignment is a no-op there and leaves
+    // the login form on screen despite the cookie now being set. reload()
+    // always forces boot() to rerun.
+    window.location.reload();
   } catch (e) {
     msg.textContent = "Could not reach the server.";
     msg.className = "settings-msg err";
@@ -1960,7 +2247,12 @@ $("#logout-btn").addEventListener("click", async () => {
   } catch (e) {
     // ignore — reload anyway, worst case the cookie is still set and boot() re-shows the dashboard
   }
-  window.location.href = "/";
+  // location.href = "/" is a no-op when already on "/" (the dashboard is the
+  // default landing page) — the browser sees an identical URL and skips the
+  // navigation, so boot() never reruns and the old dashboard DOM (plus any
+  // in-flight run-status poll) just keeps sitting there after "logout".
+  // location.reload() always forces a fresh navigation regardless of path.
+  window.location.reload();
 });
 
 boot();

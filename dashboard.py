@@ -275,7 +275,12 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_html()
         elif self.path == "/api/whoami":
             user = self._current_user()
-            self._send_json({"logged_in": user is not None, "username": user["username"] if user else None, "is_admin": bool(user["is_admin"]) if user else False})
+            self._send_json({
+                "logged_in": user is not None,
+                "id": user["id"] if user else None,
+                "username": user["username"] if user else None,
+                "is_admin": bool(user["is_admin"]) if user else False,
+            })
         elif self.path == "/api/data":
             self._serve_json()
         elif self.path == "/api/run-status":
@@ -286,6 +291,8 @@ class Handler(BaseHTTPRequestHandler):
             s["providers"] = {k: v["label"] for k, v in PROVIDERS.items()}
             s["session_owner"] = _session_owner_label(user)
             self._send_json(s)
+        elif self.path == "/api/share/list":
+            self._send_json({"codes": auth.list_share_codes_for_owner(self.current_user["id"])})
         elif self.path == "/api/auth-status":
             user = self.current_user
             owner_id = _effective_owner_id(user["id"])
@@ -368,12 +375,23 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_garmin_backfill_start()
         elif self.path == "/api/admin/invite":
             self._handle_admin_invite()
+        elif self.path == "/api/admin/rename-user":
+            self._handle_admin_rename_user()
+        elif self.path == "/api/admin/reset-password":
+            self._handle_admin_reset_password()
+        elif self.path == "/api/admin/set-admin":
+            self._handle_admin_set_admin()
+        elif self.path == "/api/admin/delete-user":
+            self._handle_admin_delete_user()
         elif self.path == "/api/share/create":
             self._handle_share_create()
         elif self.path == "/api/share/redeem":
             self._handle_share_redeem()
         elif self.path == "/api/share/revoke":
             self._handle_share_revoke()
+        elif self.path == "/api/share/revert":
+            auth.revert_to_own_session(self.current_user["id"])
+            self._send_json({"reverted": True})
         else:
             self.send_error(404)
 
@@ -721,6 +739,71 @@ class Handler(BaseHTTPRequestHandler):
         token = auth.create_invite(user["id"])
         self._send_json({"invite_token": token, "register_path": f"/register/{token}"})
 
+    def _handle_admin_rename_user(self):
+        if not self.current_user["is_admin"]:
+            self._send_json({"error": "admin only"}, status=403)
+            return
+        body = self._read_json_body()
+        target_id = body.get("user_id")
+        new_username = (body.get("new_username") or "").strip()
+        if not target_id or not new_username:
+            self._send_json({"renamed": False, "reason": "user_id and new_username required"}, status=400)
+            return
+        ok = auth.rename_user(int(target_id), new_username)
+        if not ok:
+            self._send_json({"renamed": False, "reason": "username already taken"}, status=400)
+            return
+        self._send_json({"renamed": True, "username": new_username})
+
+    def _handle_admin_reset_password(self):
+        if not self.current_user["is_admin"]:
+            self._send_json({"error": "admin only"}, status=403)
+            return
+        body = self._read_json_body()
+        target_id = body.get("user_id")
+        new_password = body.get("new_password") or ""
+        if not target_id or len(new_password) < 8:
+            self._send_json({"reset": False, "reason": "user_id and a password of 8+ characters required"}, status=400)
+            return
+        auth.admin_set_password(int(target_id), new_password)
+        self._send_json({"reset": True})
+
+    def _handle_admin_set_admin(self):
+        if not self.current_user["is_admin"]:
+            self._send_json({"error": "admin only"}, status=403)
+            return
+        body = self._read_json_body()
+        target_id = body.get("user_id")
+        if not target_id:
+            self._send_json({"changed": False, "reason": "user_id required"}, status=400)
+            return
+        target_id = int(target_id)
+        if target_id == self.current_user["id"] and not body.get("is_admin", True):
+            self._send_json({"changed": False, "reason": "cannot remove your own admin rights"}, status=400)
+            return
+        auth.set_admin(target_id, bool(body.get("is_admin")))
+        self._send_json({"changed": True})
+
+    def _handle_admin_delete_user(self):
+        if not self.current_user["is_admin"]:
+            self._send_json({"error": "admin only"}, status=403)
+            return
+        body = self._read_json_body()
+        target_id = body.get("user_id")
+        if not target_id:
+            self._send_json({"deleted": False, "reason": "user_id required"}, status=400)
+            return
+        target_id = int(target_id)
+        if target_id == self.current_user["id"]:
+            self._send_json({"deleted": False, "reason": "cannot delete your own account while logged in as it"}, status=400)
+            return
+        try:
+            auth.delete_user(target_id)
+        except ValueError as e:
+            self._send_json({"deleted": False, "reason": str(e)}, status=400)
+            return
+        self._send_json({"deleted": True})
+
     def _handle_share_create(self):
         body = self._read_json_body()
         label = (body.get("label") or "").strip()
@@ -755,6 +838,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -772,6 +856,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        # Without this, a browser can heuristically cache a GET /api/whoami
+        # response and reuse it after logout (no cookie sent, but the stale
+        # "logged_in: true" body served from cache anyway) — boot() then
+        # renders the dashboard on top of the login screen. Applies to every
+        # JSON response, not just whoami, since any of them could go stale
+        # the same way after a login/logout/settings change.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
