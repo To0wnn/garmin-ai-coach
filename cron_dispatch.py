@@ -54,14 +54,22 @@ def _due_now(user_id: int) -> bool:
 
 
 def _run_user(user_id: int):
+    # Marked BEFORE dispatching, not after: coach_sqlite.py waits on a live
+    # AI session reply and can easily outlast this dispatcher's 5-minute
+    # window, so marking only on success let the next tick re-fire the same
+    # user while the first run was still in flight (seen in production: the
+    # same date landed 2-3x in coach_log.json). Marking up front trades that
+    # for "a run that then fails leaves last_daily_run_date set for today,
+    # skipping a same-day retry" — acceptable, since a stuck AI session
+    # shouldn't be hammered every 5 minutes anyway.
+    today = datetime.now(ZoneInfo(settings.read_settings(user_id)["local_tz"])).date().isoformat()
+    db.set_sync_state(user_id, "last_daily_run_date", today)
     print(f"Dispatching daily/weekly advice for user_id={user_id}...")
     result = subprocess.run(["python3", COACH_SCRIPT, str(user_id)], capture_output=True, text=True, timeout=330)
     if result.returncode != 0:
         stderr = result.stderr or result.stdout or "unknown error"
         print(f"user_id={user_id}: run failed: {stderr[-1000:]}", file=sys.stderr)
         return
-    today = datetime.now(ZoneInfo(settings.read_settings(user_id)["local_tz"])).date().isoformat()
-    db.set_sync_state(user_id, "last_daily_run_date", today)
     print(f"user_id={user_id}: done.")
 
 
